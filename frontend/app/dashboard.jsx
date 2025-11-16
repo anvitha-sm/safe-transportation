@@ -7,6 +7,7 @@ import {
   StyleSheet,
   Alert,
   TextInput,
+  Modal,
 } from "react-native";
 import { router } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -33,7 +34,15 @@ export default function Dashboard() {
     cost: 10,
   });
   const [preferencesChanged, setPreferencesChanged] = useState(false);
+  const [routeQuery, setRouteQuery] = useState('');
+  // use Date objects (or null) for pickers
+  const [routeDateFrom, setRouteDateFrom] = useState(null);
+  const [routeDateTo, setRouteDateTo] = useState(null);
+  const [showFromPicker, setShowFromPicker] = useState(false);
+  const [showToPicker, setShowToPicker] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [routePage, setRoutePage] = useState(0);
+  const ROUTES_PAGE_SIZE = 3;
   const [rankingMode, setRankingMode] = useState(false);
   const defaultOrder = ["lighting", "footTraffic", "cleanliness", "crime", "speed", "cost"];
   const [rankingOrder, setRankingOrder] = useState(defaultOrder);
@@ -47,6 +56,13 @@ export default function Dashboard() {
     const hasChanged = JSON.stringify(preferences) !== JSON.stringify(originalPreferences);
     setPreferencesChanged(hasChanged);
   }, [preferences, originalPreferences]);
+
+  // Reset page when filters or routes change
+  useEffect(() => {
+    setRoutePage(0);
+  }, [routeQuery, routeDateFrom, routeDateTo, routes]);
+
+  
 
   const loadUserData = async () => {
     try {
@@ -95,6 +111,7 @@ export default function Dashboard() {
   };
 
   const formatDate = (date) => {
+    if (!date) return '';
     const d = new Date(date);
     return d.toLocaleDateString("en-US", {
       month: "short",
@@ -102,6 +119,43 @@ export default function Dashboard() {
       year: "numeric",
     });
   };
+
+  function CalendarModal({ visible, date, onClose, onSelect }) {
+    const [selected, setSelected] = useState(date || new Date());
+
+    const daysInMonth = new Date(selected.getFullYear(), selected.getMonth() + 1, 0).getDate();
+
+    const prevMonth = () => setSelected(new Date(selected.getFullYear(), selected.getMonth() - 1, 1));
+    const nextMonth = () => setSelected(new Date(selected.getFullYear(), selected.getMonth() + 1, 1));
+
+    const chooseDay = (d) => {
+      const chosen = new Date(selected.getFullYear(), selected.getMonth(), d);
+      onSelect(chosen);
+      onClose();
+    };
+
+    return (
+      <Modal visible={visible} transparent animationType="slide">
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center' }}>
+          <View style={{ width: '90%', backgroundColor: 'white', padding: 16, borderRadius: 10 }}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+              <TouchableOpacity onPress={prevMonth}><Text style={{ fontSize: 18, fontWeight: '700' }}>◀</Text></TouchableOpacity>
+              <Text style={{ fontWeight: '700' }}>{selected.toLocaleString('default', { month: 'long' })} {selected.getFullYear()}</Text>
+              <TouchableOpacity onPress={nextMonth}><Text style={{ fontSize: 18, fontWeight: '700' }}>▶</Text></TouchableOpacity>
+            </View>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 12 }}>
+              {Array.from({ length: daysInMonth }).map((_, i) => (
+                <TouchableOpacity key={i} style={{ width: '14%', padding: 8, alignItems: 'center', marginBottom: 6 }} onPress={() => chooseDay(i + 1)}>
+                  <Text>{i + 1}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <TouchableOpacity style={{ marginTop: 12, backgroundColor: colors.primary, padding: 10, borderRadius: 8, alignItems: 'center' }} onPress={onClose}><Text style={{ color: 'white' }}>Close</Text></TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+    );
+  }
 
   const getModeEmoji = (mode) => {
     switch (mode) {
@@ -305,7 +359,36 @@ export default function Dashboard() {
   }
 
 
-  const sortedRoutes = [...routes].sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 3);
+  const applyRouteFilters = (list) => {
+    return list.filter((r) => {
+      try {
+        if (routeQuery) {
+          const q = routeQuery.toLowerCase();
+          const start = (r.start || '').toLowerCase();
+          const end = (r.end || '').toLowerCase();
+          if (!start.includes(q) && !end.includes(q)) return false;
+        }
+        if (routeDateFrom instanceof Date) {
+          const from = routeDateFrom;
+          if (isNaN(from.getTime())) return false;
+          if (new Date(r.date) < from) return false;
+        }
+        if (routeDateTo instanceof Date) {
+          const to = routeDateTo;
+          if (isNaN(to.getTime())) return false;
+          if (new Date(r.date) > to) return false;
+        }
+        return true;
+      } catch (_e) {
+        return true;
+      }
+    });
+  };
+
+  const filteredRoutes = applyRouteFilters([...routes]).sort((a, b) => new Date(b.date) - new Date(a.date));
+  const totalPages = Math.max(1, Math.ceil(filteredRoutes.length / ROUTES_PAGE_SIZE));
+  const startIndex = routePage * ROUTES_PAGE_SIZE;
+  const displayedRoutes = filteredRoutes.slice(startIndex, startIndex + ROUTES_PAGE_SIZE);
 
   return (
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
@@ -327,10 +410,47 @@ export default function Dashboard() {
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Your Recent Routes</Text>
 
-        {sortedRoutes.length > 0 ? (
+        <View style={{ marginBottom: 12 }}>
+          <TextInput
+            placeholder="Filter by start or end location"
+            placeholderTextColor={colors.textMuted}
+            value={routeQuery}
+            onChangeText={setRouteQuery}
+            style={{ backgroundColor: colors.offWhite, padding: 10, borderRadius: 8, borderWidth: 1, borderColor: colors.lightBorder, marginBottom: 8 }}
+          />
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            <TouchableOpacity
+              onPress={() => setShowFromPicker(true)}
+              style={{ flex: 1, backgroundColor: colors.offWhite, padding: 10, borderRadius: 8, borderWidth: 1, borderColor: colors.lightBorder, justifyContent: 'center' }}
+            >
+              <Text style={{ color: routeDateFrom ? colors.textDark : colors.textMuted }}>{routeDateFrom ? formatDate(routeDateFrom) : 'From date'}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => setShowToPicker(true)}
+              style={{ flex: 1, backgroundColor: colors.offWhite, padding: 10, borderRadius: 8, borderWidth: 1, borderColor: colors.lightBorder, justifyContent: 'center' }}
+            >
+              <Text style={{ color: routeDateTo ? colors.textDark : colors.textMuted }}>{routeDateTo ? formatDate(routeDateTo) : 'To date'}</Text>
+            </TouchableOpacity>
+          </View>
+          <View style={{ flexDirection: 'row', justifyContent: 'flex-end', marginTop: 8 }}>
+            <TouchableOpacity onPress={() => { setRouteQuery(''); setRouteDateFrom(null); setRouteDateTo(null); setRoutePage(0); }} style={{ paddingVertical: 8, paddingHorizontal: 12, backgroundColor: colors.track, borderRadius: 8 }}>
+              <Text style={{ color: 'white', fontWeight: '700' }}>Clear</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        {/* Calendar modals */}
+        {showFromPicker && (
+          <CalendarModal visible={showFromPicker} date={routeDateFrom || new Date()} onClose={() => setShowFromPicker(false)} onSelect={(d) => setRouteDateFrom(d)} />
+        )}
+        {showToPicker && (
+          <CalendarModal visible={showToPicker} date={routeDateTo || new Date()} onClose={() => setShowToPicker(false)} onSelect={(d) => setRouteDateTo(d)} />
+        )}
+
+        {displayedRoutes.length > 0 ? (
           <View style={styles.routeRow}>
-            {sortedRoutes.map((route, idx) => (
-              <View key={route._id} style={[styles.routeCardInline, idx < sortedRoutes.length - 1 ? { marginRight: 12 } : {}]}>
+            {displayedRoutes.map((route, idx) => (
+              <View key={route._id} style={[styles.routeCardInline, idx < displayedRoutes.length - 1 ? { marginRight: 12 } : {}]}>
                 <View style={styles.routeHeader}>
                   <Text style={styles.routeMode}>{getModeEmoji(route.mode)}</Text>
                   <View style={styles.routeInfo}>
@@ -352,10 +472,31 @@ export default function Dashboard() {
                 </TouchableOpacity>
               </View>
             ))}
+              <View style={{ width: '100%', alignItems: 'center', marginTop: 8, marginBottom: 4 }}>
+                <View style={styles.paginationRow}>
+                  <TouchableOpacity
+                    onPress={() => setRoutePage((p) => Math.max(0, p - 1))}
+                    disabled={routePage <= 0}
+                    style={[styles.pageButton, routePage <= 0 && styles.pageButtonDisabled]}
+                  >
+                    <Text style={[styles.pageButtonText, routePage <= 0 && styles.pageButtonTextDisabled]}>Prev</Text>
+                  </TouchableOpacity>
+
+                  <Text style={styles.pageLabel}>Page {Math.min(routePage + 1, totalPages)} of {totalPages}</Text>
+
+                  <TouchableOpacity
+                    onPress={() => setRoutePage((p) => Math.min(totalPages - 1, p + 1))}
+                    disabled={routePage >= totalPages - 1}
+                    style={[styles.pageButton, routePage >= totalPages - 1 && styles.pageButtonDisabled]}
+                  >
+                    <Text style={[styles.pageButtonText, routePage >= totalPages - 1 && styles.pageButtonTextDisabled]}>Next</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
           </View>
         ) : (
           <View style={styles.emptyState}>
-            <Text style={styles.emptyText}>You have not begun exploring just yet!</Text>
+            <Text style={styles.emptyText}>No routes found.</Text>
           </View>
         )}
 
@@ -775,6 +916,33 @@ const styles = StyleSheet.create({
   feedbackButtonText: {
     color: 'white',
     fontWeight: '700',
+  },
+  paginationRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+  },
+  pageButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    backgroundColor: colors.primary,
+    borderRadius: 8,
+  },
+  pageButtonDisabled: {
+    backgroundColor: colors.track,
+    opacity: 0.6,
+  },
+  pageButtonText: {
+    color: 'white',
+    fontWeight: '700',
+  },
+  pageButtonTextDisabled: {
+    color: colors.textMuted,
+  },
+  pageLabel: {
+    fontWeight: '700',
+    color: colors.textDark,
   },
 });
 

@@ -11,6 +11,7 @@ import {
   ScrollView,
 } from "react-native";
 import { colors } from "./theme";
+import { BASE_URL } from '../api/api';
 import { router } from 'expo-router';
 import debounce from "lodash.debounce";
 
@@ -23,10 +24,20 @@ export default function Alerts() {
   const [locationGranted, setLocationGranted] = useState(false);
   const [currentCoords, setCurrentCoords] = useState(null);
   const [nearbyAlerts, setNearbyAlerts] = useState([]);
+  const [allAlerts, setAllAlerts] = useState([]);
+  const [alertsPage, setAlertsPage] = useState(0);
+  const ALERTS_PAGE_SIZE = 5;
+
+  const CATEGORY_OPTIONS = ['all', 'road', 'theft', 'burglary', 'assault', 'weapon', 'cleanliness'];
+  const SEVERITY_OPTIONS = ['all', 'low', 'medium', 'high', 'urgent'];
 
   const [query, setQuery] = useState("");
   const [suggestions, setSuggestions] = useState([]);
   const [searchLoading, setSearchLoading] = useState(false);
+  const [selectedCategory, setSelectedCategory] = useState('all');
+  const [selectedSeverity, setSelectedSeverity] = useState('all');
+  const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
+  const [showSeverityDropdown, setShowSeverityDropdown] = useState(false);
 
   const mounted = useRef(true);
 
@@ -75,14 +86,21 @@ export default function Alerts() {
     }
   };
 
-  const fetchAlertsNearby = async (lat, lon) => {
+  const fetchAlertsNearby = async (lat, lon, highlightLocation) => {
     setLoading(true);
     try {
       // Try backend endpoint first
       try {
-        const url = (lat != null && lon != null)
-          ? `http://localhost:5000/api/alerts?lat=${lat}&lon=${lon}`
-          : `http://localhost:5000/api/alerts`;
+        const params = [];
+        if (lat != null && lon != null) {
+          params.push(`lat=${lat}`);
+          params.push(`lon=${lon}`);
+        }
+        if (selectedCategory && selectedCategory !== 'all') params.push(`category=${encodeURIComponent(selectedCategory)}`);
+        if (selectedSeverity && selectedSeverity !== 'all') params.push(`severity=${encodeURIComponent(selectedSeverity)}`);
+        const url = params.length > 0 ? `${BASE_URL}/api/alerts?${params.join('&')}` : `${BASE_URL}/api/alerts`;
+        // debug
+        // console.log('fetchAlertsNearby url', url);
         const res = await fetch(url);
         if (res.ok) {
           const json = await res.json();
@@ -104,22 +122,57 @@ export default function Alerts() {
             const severity = a.severity || 'low';
             return { id, title, desc, latitude, longitude, distance, time, category, severity };
           });
-          setNearbyAlerts(items.slice(0, 5));
+          // If a highlightLocation (user selected a suggestion without coords) was provided,
+          // push alerts whose title/location matches the suggestion to the top.
+          if (highlightLocation) {
+            const hl = String(highlightLocation).toLowerCase();
+            items.sort((x, y) => {
+              const xm = x.title && x.title.toLowerCase().includes(hl) ? 0 : 1;
+              const ym = y.title && y.title.toLowerCase().includes(hl) ? 0 : 1;
+              if (xm !== ym) return xm - ym;
+              // otherwise sort by distance (nulls go last)
+              const xd = x.distance != null ? x.distance : Number.POSITIVE_INFINITY;
+              const yd = y.distance != null ? y.distance : Number.POSITIVE_INFINITY;
+              return xd - yd;
+            });
+          }
+          // store full list and set first page
+          setAllAlerts(items);
+          setAlertsPage(0);
+          setNearbyAlerts(items.slice(0, ALERTS_PAGE_SIZE));
           return;
         }
-      } catch (e) {
+      } catch (_e) {
         // ignore and fall back to mock
       }
 
       // Fallback: generate mock alerts with distances
-      const mocks = generateMockAlerts(lat ?? 37.7749, lon ?? -122.4194).sort((a, b) => a.distance - b.distance).slice(0, 5);
-      setNearbyAlerts(mocks);
+      let mocks = generateMockAlerts(lat ?? 37.7749, lon ?? -122.4194).sort((a, b) => a.distance - b.distance);
+      if (highlightLocation) {
+        const hl = String(highlightLocation).toLowerCase();
+        mocks.sort((x, y) => {
+          const xm = x.title && x.title.toLowerCase().includes(hl) ? 0 : 1;
+          const ym = y.title && y.title.toLowerCase().includes(hl) ? 0 : 1;
+          if (xm !== ym) return xm - ym;
+          return x.distance - y.distance;
+        });
+      }
+      setAllAlerts(mocks);
+      setAlertsPage(0);
+      setNearbyAlerts(mocks.slice(0, ALERTS_PAGE_SIZE));
     } catch (err) {
       console.error(err);
     } finally {
       if (mounted.current) setLoading(false);
     }
   };
+
+  // when allAlerts or alertsPage changes, update the displayed nearbyAlerts
+  useEffect(() => {
+    const start = alertsPage * ALERTS_PAGE_SIZE;
+    const slice = allAlerts.slice(start, start + ALERTS_PAGE_SIZE);
+    setNearbyAlerts(slice);
+  }, [allAlerts, alertsPage]);
 
   const generateMockAlerts = (lat, lon) => {
     // deterministic mock alerts for dev — distances in meters
@@ -158,7 +211,7 @@ export default function Alerts() {
     try {
       // If backend provides a geocode/autocomplete endpoint, call it
       try {
-        const res = await fetch(`http://localhost:5000/api/geocode?query=${encodeURIComponent(text)}`);
+        const res = await fetch(`${BASE_URL}/api/geocode?query=${encodeURIComponent(text)}`);
         if (res.ok) {
           const json = await res.json();
           if (Array.isArray(json.suggestions)) {
@@ -200,10 +253,26 @@ export default function Alerts() {
     setQuery(sugg.place_name || "");
     setSuggestions([]);
     // center is [lon, lat]
-    const lon = (sugg.center && sugg.center[0]) || currentCoords?.longitude;
-    const lat = (sugg.center && sugg.center[1]) || currentCoords?.latitude;
-    if (lat && lon) fetchAlertsNearby(lat, lon);
+    const lon = (sugg.center && sugg.center[0]);
+    const lat = (sugg.center && sugg.center[1]);
+    if (lat != null && lon != null) {
+      fetchAlertsNearby(lat, lon, sugg.place_name);
+    } else {
+      // No center coords returned (likely came from DB fallback). Fetch general list and highlight matching location.
+      fetchAlertsNearby(null, null, sugg.place_name);
+    }
   };
+
+  // re-fetch when category/severity filters change
+  useEffect(() => {
+    fetchAlertsNearby(currentCoords?.latitude ?? null, currentCoords?.longitude ?? null, null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedCategory, selectedSeverity, currentCoords?.latitude, currentCoords?.longitude]);
+
+  // when query or filters change, reset page
+  useEffect(() => setAlertsPage(0), [query, selectedCategory, selectedSeverity]);
+
+  // loadMoreAlerts removed in favor of page-based prev/next
 
   /* ---------- UI rendering helpers ---------- */
   const renderAlert = ({ item }) => (
@@ -243,6 +312,12 @@ export default function Alerts() {
           onChangeText={onChangeQuery}
         />
         {searchLoading && <ActivityIndicator style={{ marginLeft: 8 }} />}
+        <TouchableOpacity onPress={() => setShowCategoryDropdown((s) => !s)} style={styles.filterButton}>
+          <Text style={styles.filterButtonText}>Category: {selectedCategory}</Text>
+        </TouchableOpacity>
+        <TouchableOpacity onPress={() => setShowSeverityDropdown((s) => !s)} style={[styles.filterButton, { marginLeft: 8 }]}>
+          <Text style={styles.filterButtonText}>Severity: {selectedSeverity}</Text>
+        </TouchableOpacity>
       </View>
 
       {suggestions.length > 0 && (
@@ -250,6 +325,25 @@ export default function Alerts() {
           {suggestions.map((s, i) => (
             <TouchableOpacity key={i} style={styles.suggestionItem} onPress={() => onSelectSuggestion(s)}>
               <Text style={styles.suggestionText}>{s.place_name}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      )}
+
+      {showCategoryDropdown && (
+        <View style={[styles.suggestions, { marginBottom: 8 }]}>
+          {CATEGORY_OPTIONS.map((c) => (
+            <TouchableOpacity key={c} style={styles.suggestionItem} onPress={() => { setSelectedCategory(c); setShowCategoryDropdown(false); }}>
+              <Text style={styles.suggestionText}>{c}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      )}
+      {showSeverityDropdown && (
+        <View style={[styles.suggestions, { marginBottom: 8 }]}>
+          {SEVERITY_OPTIONS.map((s) => (
+            <TouchableOpacity key={s} style={styles.suggestionItem} onPress={() => { setSelectedSeverity(s); setShowSeverityDropdown(false); }}>
+              <Text style={styles.suggestionText}>{s}</Text>
             </TouchableOpacity>
           ))}
         </View>
@@ -269,7 +363,20 @@ export default function Alerts() {
             {nearbyAlerts.length === 0 ? (
               <Text style={styles.emptyText}>{locationGranted ? 'No community alerts near you.' : 'No community alerts available.'}</Text>
             ) : (
-              <FlatList data={nearbyAlerts} keyExtractor={(i) => i.id} renderItem={renderAlert} />
+                      <View>
+                        <FlatList data={nearbyAlerts} keyExtractor={(i) => i.id} renderItem={renderAlert} />
+                        {allAlerts.length > 0 && (
+                          <View style={{ flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginTop: 8, gap: 12 }}>
+                            <TouchableOpacity onPress={() => setAlertsPage((p) => Math.max(0, p - 1))} disabled={alertsPage === 0} style={{ paddingVertical: 8, paddingHorizontal: 12, backgroundColor: alertsPage === 0 ? '#ddd' : colors.track, borderRadius: 8 }}>
+                              <Text style={{ fontWeight: '700' }}>Prev</Text>
+                            </TouchableOpacity>
+                            <Text style={{ color: colors.textMuted }}>{`Page ${alertsPage + 1} of ${Math.max(1, Math.ceil(allAlerts.length / ALERTS_PAGE_SIZE))}`}</Text>
+                            <TouchableOpacity onPress={() => setAlertsPage((p) => Math.min(Math.max(0, Math.ceil(allAlerts.length / ALERTS_PAGE_SIZE) - 1), p + 1))} disabled={(alertsPage + 1) * ALERTS_PAGE_SIZE >= allAlerts.length} style={{ paddingVertical: 8, paddingHorizontal: 12, backgroundColor: (alertsPage + 1) * ALERTS_PAGE_SIZE >= allAlerts.length ? '#ddd' : colors.track, borderRadius: 8 }}>
+                              <Text style={{ fontWeight: '700' }}>Next</Text>
+                            </TouchableOpacity>
+                          </View>
+                        )}
+                      </View>
             )}
           </View>
         </View>
@@ -313,5 +420,18 @@ const styles = StyleSheet.create({
   alertTime: { color: colors.textMuted, marginTop: 8, fontSize: 12 },
   alertDistance: { color: colors.primaryDark, fontWeight: "700" },
   addAlertBtn: { backgroundColor: colors.buttonPink, paddingVertical: 6, paddingHorizontal: 10, borderRadius: 8 },
-  addAlertText: { color: colors.primaryDark, fontWeight: '700' },
+  addAlertText: { color: colors.offWhite, fontWeight: '700' },
+  filterButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    backgroundColor: colors.bg,
+    borderWidth: 1,
+    borderColor: colors.lightBorder,
+    marginLeft: 8,
+  },
+  filterButtonText: {
+    color: colors.primaryDark,
+    fontWeight: '700',
+  },
 });
