@@ -4,6 +4,9 @@ const cors = require("cors");
 const mongoose = require("mongoose");
 
 const authRoutes = require("./routes/auth");
+const alertsRoutes = require("./routes/alerts");
+const alertsController = require("./controllers/alertsController");
+const debugRoutes = require("./routes/debug");
 
 const app = express();
 app.use(cors());
@@ -14,6 +17,9 @@ app.get("/ping", (req, res) => {
 });
 
 app.use("/api/auth", authRoutes);
+app.use("/api/alerts", alertsRoutes);
+app.get("/api/geocode", alertsController.geocode);
+app.use('/api/debug', debugRoutes);
 mongoose
   .connect(process.env.MONGO_URI)
   .then(() => {

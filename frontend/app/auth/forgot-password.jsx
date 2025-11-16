@@ -6,6 +6,7 @@ import {
   TouchableOpacity,
   Alert,
   StyleSheet,
+  ScrollView,
 } from "react-native";
 import { router } from "expo-router";
 import { forgotPasswordApi, resetPasswordApi } from "../../api/api";
@@ -111,7 +112,7 @@ export default function ForgotPassword() {
   };
 
   return (
-    <View style={styles.container}>
+    <ScrollView style={styles.container} contentContainerStyle={{ alignItems: 'center', justifyContent: 'center', paddingHorizontal: 20 }} keyboardShouldPersistTaps="handled">
       <View style={styles.box}>
         <Text style={styles.title}>Reset Password</Text>
 
@@ -212,7 +213,7 @@ export default function ForgotPassword() {
           <Text style={styles.secondaryText}>Back to Login</Text>
         </TouchableOpacity>
       </View>
-    </View>
+    </ScrollView>
   );
 }
 
@@ -220,9 +221,6 @@ export default function ForgotPassword() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    paddingHorizontal: 20,
     backgroundColor: colors.bg,
   },
 

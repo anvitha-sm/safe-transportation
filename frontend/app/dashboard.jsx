@@ -34,6 +34,9 @@ export default function Dashboard() {
   });
   const [preferencesChanged, setPreferencesChanged] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [rankingMode, setRankingMode] = useState(false);
+  const defaultOrder = ["lighting", "footTraffic", "cleanliness", "crime", "speed", "cost"];
+  const [rankingOrder, setRankingOrder] = useState(defaultOrder);
 
   useEffect(() => {
     loadUserData();
@@ -118,6 +121,63 @@ export default function Dashboard() {
       ...preferences,
       [key]: value,
     });
+  };
+
+  const rankToValue = (rank) => {
+    switch (rank) {
+      case 1:
+        return 18;
+      case 2:
+        return 15;
+      case 3:
+        return 12;
+      case 4:
+        return 9;
+      case 5:
+        return 6;
+      case 6:
+        return 3;
+      default:
+        return 0;
+    }
+  };
+
+  const preferencesToRanking = (prefs) => {
+    return Object.keys(prefs).sort((a, b) => {
+      const diff = prefs[b] - prefs[a];
+      if (diff !== 0) return diff;
+      return defaultOrder.indexOf(a) - defaultOrder.indexOf(b);
+    });
+  };
+
+  const orderToPreferences = (order) => {
+    const mapped = {};
+    for (let i = 0; i < order.length; i++) {
+      mapped[order[i]] = rankToValue(i + 1);
+    }
+    return mapped;
+  };
+
+  const switchToRanking = () => {
+    const order = preferencesToRanking(preferences);
+    setRankingOrder(order);
+    setRankingMode(true);
+  };
+
+  const switchToSliders = () => {
+    const mapped = orderToPreferences(rankingOrder);
+    setPreferences(mapped);
+    setOriginalPreferences(mapped);
+    setRankingMode(false);
+  };
+
+  const moveRank = (index, direction) => {
+    const arr = [...rankingOrder];
+    const newIndex = index + direction;
+    if (newIndex < 0 || newIndex >= arr.length) return;
+    const item = arr.splice(index, 1)[0];
+    arr.splice(newIndex, 0, item);
+    setRankingOrder(arr);
   };
 
   const PreferenceItem = ({ name, value }) => {
@@ -210,13 +270,15 @@ export default function Dashboard() {
   const savePreferences = async () => {
     try {
       if (!user) return;
-      
-      const response = await updatePreferencesApi(user._id, preferences);
+
+      const payload = rankingMode ? orderToPreferences(rankingOrder) : preferences;
+
+      const response = await updatePreferencesApi(user._id, payload);
 
       if (response.preferences) {
         setOriginalPreferences(response.preferences);
       } else {
-        setOriginalPreferences(preferences);
+        setOriginalPreferences(payload);
       }
       setPreferencesChanged(false);
       Alert.alert("Success", "Your travel preferences have been saved!");
@@ -227,22 +289,11 @@ export default function Dashboard() {
   };
 
   const startNewRoute = () => {
-    router.push("/route/new");
+    router.push("/route");
   };
 
-  const logout = () => {
-    Alert.alert("Logout", "Are you sure you want to logout?", [
-      { text: "Cancel", onPress: () => {} },
-      {
-        text: "Logout",
-        onPress: async () => {
-
-          await AsyncStorage.removeItem("@user_token");
-          await AsyncStorage.removeItem("@user_data");
-          router.replace("/");
-        },
-      },
-    ]);
+  const goBack = () => {
+    router.back();
   };
 
   if (loading || !user) {
@@ -265,10 +316,10 @@ export default function Dashboard() {
           <Text style={styles.email}>{user.email}</Text>
         </View>
         <TouchableOpacity
-          style={styles.logoutButton}
-          onPress={logout}
+          style={styles.backButton}
+          onPress={goBack}
         >
-          <Text style={styles.logoutButtonText}>Logout</Text>
+          <Text style={styles.backArrow}>←</Text>
         </TouchableOpacity>
       </View>
 
@@ -277,9 +328,9 @@ export default function Dashboard() {
         <Text style={styles.sectionTitle}>Your Recent Routes</Text>
 
         {sortedRoutes.length > 0 ? (
-          <View>
-            {sortedRoutes.map((route) => (
-              <View key={route._id} style={styles.routeCard}>
+          <View style={styles.routeRow}>
+            {sortedRoutes.map((route, idx) => (
+              <View key={route._id} style={[styles.routeCardInline, idx < sortedRoutes.length - 1 ? { marginRight: 12 } : {}]}>
                 <View style={styles.routeHeader}>
                   <Text style={styles.routeMode}>{getModeEmoji(route.mode)}</Text>
                   <View style={styles.routeInfo}>
@@ -293,12 +344,18 @@ export default function Dashboard() {
                   </View>
                 </View>
                 <Text style={styles.routeDate}>{formatDate(route.date)}</Text>
+                <TouchableOpacity
+                  style={styles.feedbackButton}
+                  onPress={() => router.push(`/route/feedback?userId=${user._id}&routeId=${route._id}`)}
+                >
+                  <Text style={styles.feedbackButtonText}>Feedback</Text>
+                </TouchableOpacity>
               </View>
             ))}
           </View>
         ) : (
           <View style={styles.emptyState}>
-            <Text style={styles.emptyText}>No routes yet</Text>
+            <Text style={styles.emptyText}>You have not begun exploring just yet!</Text>
           </View>
         )}
 
@@ -314,12 +371,58 @@ export default function Dashboard() {
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Your Travel Preferences</Text>
         <Text style={styles.sectionSubtitle}>
-          We personalize your routes! Rank how important the following aspects of travel are to you from 0 (not important) to 20 (very important).
+          We personalize your routes! Choose how you would like to set importance: with Sliders or by Ranking your priorities.
         </Text>
 
-        {Object.entries(preferences).map(([key, value]) => (
-          <PreferenceItem key={key} name={key} value={value} />
-        ))}
+        <View style={{ flexDirection: "row", gap: 8, marginBottom: 12 }}>
+          <TouchableOpacity
+            style={[styles.toggleButton, !rankingMode && styles.toggleActive]}
+            onPress={switchToSliders}
+          >
+            <Text style={[styles.toggleText, !rankingMode && { color: "white" }]}>Sliders</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.toggleButton, rankingMode && styles.toggleActive]}
+            onPress={switchToRanking}
+          >
+            <Text style={[styles.toggleText, rankingMode && { color: "white" }]}>Rank</Text>
+          </TouchableOpacity>
+        </View>
+
+        <View style={{ marginBottom: 12 }}>
+          {rankingMode ? (
+            <Text style={styles.scaleText}>1 (most important) to 6 (least important)</Text>
+          ) : (
+            <Text style={styles.scaleText}>0 (not important) to 20 (most important)</Text>
+          )}
+        </View>
+
+        {rankingMode ? (
+          <View>
+            {rankingOrder.map((key, idx) => (
+              <View key={key} style={[styles.preferenceItem, { flexDirection: "row", alignItems: "center", justifyContent: "space-between" }]}> 
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+                  <Text style={{ fontWeight: "800", fontSize: 16, color: colors.accent }}>{idx + 1}</Text>
+                  <Text style={styles.preferenceName}>{key.charAt(0).toUpperCase() + key.slice(1)}</Text>
+                </View>
+                <View style={{ flexDirection: "row", gap: 8 }}>
+                  <TouchableOpacity style={styles.rankButton} onPress={() => moveRank(idx, -1)}>
+                    <Text style={{ fontSize: 18 }}>↑</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.rankButton} onPress={() => moveRank(idx, 1)}>
+                    <Text style={{ fontSize: 18 }}>↓</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ))}
+          </View>
+        ) : (
+          <View>
+            {Object.entries(preferences).map(([key, value]) => (
+              <PreferenceItem key={key} name={key} value={value} />
+            ))}
+          </View>
+        )}
 
         {preferencesChanged && (
           <TouchableOpacity
@@ -342,6 +445,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.bg,
     paddingHorizontal: 16,
     paddingTop: 16,
+    paddingBottom: 96,
   },
 
   loadingContainer: {
@@ -379,23 +483,16 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     fontWeight: "500",
   },
-
-  logoutButton: {
-    backgroundColor: colors.logoutBg,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
+  backButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
     borderRadius: 8,
-    shadowColor: colors.logoutBg,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
-    elevation: 3,
   },
 
-  logoutButtonText: {
-    color: "white",
+  backArrow: {
+    fontSize: 20,
+    color: colors.primaryDark,
     fontWeight: "700",
-    fontSize: 12,
   },
 
   section: {
@@ -432,6 +529,26 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     borderLeftWidth: 4,
     borderLeftColor: colors.sectionShadow,
+  },
+
+  routeRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 8,
+    flexWrap: 'wrap',
+  },
+
+  routeCardInline: {
+    backgroundColor: colors.cardBg,
+    borderRadius: 12,
+    padding: 14,
+    flexBasis: '30%',
+    maxWidth: '30%',
+    minWidth: 160,
+    borderLeftWidth: 4,
+    borderLeftColor: colors.sectionShadow,
+    marginBottom: 8,
   },
 
   routeHeader: {
@@ -609,8 +726,55 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
 
+  toggleButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 8,
+    backgroundColor: colors.offWhite,
+    borderWidth: 1,
+    borderColor: colors.lightBorder,
+  },
+
+  toggleActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+
+  toggleText: {
+    color: colors.primaryDark,
+    fontWeight: "700",
+    fontSize: 14,
+  },
+
+  rankButton: {
+    backgroundColor: colors.track,
+    padding: 8,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    minWidth: 40,
+  },
+  scaleText: {
+    fontSize: 13,
+    color: colors.textMuted,
+    fontWeight: "600",
+  },
+
   spacer: {
     height: 20,
+  },
+  feedbackButton: {
+    marginTop: 8,
+    alignSelf: 'flex-start',
+    backgroundColor: colors.accent,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+  },
+
+  feedbackButtonText: {
+    color: 'white',
+    fontWeight: '700',
   },
 });
 

@@ -11,6 +11,9 @@ const UserSchema = new mongoose.Schema({
 
   routes: [RouteSchema],
   preferences: PreferencesSchema,
+  locationGranted: { type: Boolean, default: false },
+  latitude: { type: Number },
+  longitude: { type: Number },
 });
 
 UserSchema.pre("save", async function(next) {
@@ -23,7 +26,7 @@ UserSchema.pre("save", async function(next) {
       speed: 10,
       cost: 10,
     };
-n  }
+  }
 
   if (!this.isModified("password")) return next();
   

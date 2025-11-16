@@ -14,7 +14,7 @@ const isValidEmail = (email) => {
 
 exports.register = async (req, res) => {
   try {
-    const { username, name, email, password } = req.body;
+    const { username, name, email, password, locationGranted, latitude, longitude } = req.body;
 
 
     if (!username || !name || !email || !password) {
@@ -53,7 +53,7 @@ exports.register = async (req, res) => {
       return res.status(400).json({ message: "Username taken" });
     }
 
-    const user = await User.create({
+    const createPayload = {
       username,
       name,
       email,
@@ -67,7 +67,15 @@ exports.register = async (req, res) => {
         cost: 10,
       },
       routes: [],
-    });
+    };
+
+    if (locationGranted) {
+      createPayload.locationGranted = true;
+      if (typeof latitude === 'number') createPayload.latitude = latitude;
+      if (typeof longitude === 'number') createPayload.longitude = longitude;
+    }
+
+    const user = await User.create(createPayload);
 
     res.json({
       message: "User created",
@@ -85,7 +93,10 @@ exports.register = async (req, res) => {
           crime: 10,
           speed: 10,
           cost: 10,
-        }
+        },
+        locationGranted: user.locationGranted || false,
+        latitude: user.latitude,
+        longitude: user.longitude,
       }
     });
   } catch (e) {
@@ -294,6 +305,34 @@ exports.updatePreferences = async (req, res) => {
     });
   } catch (e) {
     res.status(500).json({ message: "Error updating preferences" });
+  }
+};
+
+exports.addRouteFeedback = async (req, res) => {
+  try {
+    const { userId, routeId } = req.params;
+    const { ratings, comments, ratedBy } = req.body;
+
+    if (!userId || !routeId) return res.status(400).json({ message: 'userId and routeId required' });
+
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    const route = user.routes.id(routeId);
+    if (!route) return res.status(404).json({ message: 'Route not found' });
+
+    route.feedback = route.feedback || {};
+    route.feedback.ratings = ratings || route.feedback.ratings || {};
+    route.feedback.comments = comments || route.feedback.comments || "";
+    route.feedback.ratedAt = new Date();
+    if (ratedBy) route.feedback.ratedBy = ratedBy;
+
+    await user.save();
+
+    res.json({ success: true, route });
+  } catch (err) {
+    console.error('addRouteFeedback error', err);
+    res.status(500).json({ message: 'Failed to save feedback' });
   }
 };
 

@@ -6,6 +6,7 @@ import {
   TouchableOpacity,
   Alert,
   StyleSheet,
+  ScrollView,
 } from "react-native";
 import { router } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -69,7 +70,30 @@ export default function CreateAccount() {
       return;
     }
 
-    const data = { username, email, name, password };
+    let locationGranted = false;
+    let latitude = null;
+    let longitude = null;
+    try {
+      let Location;
+      try {
+        Location = require('expo-location');
+      } catch (_e) {
+        Location = null;
+      }
+      if (Location) {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status === 'granted') {
+          locationGranted = true;
+          const pos = await Location.getCurrentPositionAsync({});
+          latitude = pos.coords.latitude;
+          longitude = pos.coords.longitude;
+        }
+      }
+    } catch (_e) {
+      console.warn('Location request failed at signup');
+    }
+
+    const data = { username, email, name, password, locationGranted, latitude, longitude };
     try {
       const res = await joinApi(data);
       if (res.token && res.user) {
@@ -85,7 +109,7 @@ export default function CreateAccount() {
   };
 
   return (
-    <View style={styles.container}>
+    <ScrollView style={styles.container} contentContainerStyle={{ alignItems: 'center', justifyContent: 'center', paddingHorizontal: 20 }} keyboardShouldPersistTaps="handled">
       <View style={styles.box}>
         <Text style={[styles.title]}>Create Account</Text>
 
@@ -172,16 +196,13 @@ export default function CreateAccount() {
           <Text style={styles.secondaryText}>Already have an account? Login</Text>
         </TouchableOpacity>
       </View>
-    </View>
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    paddingHorizontal: 20,
     backgroundColor: colors.bg,
   },
 
