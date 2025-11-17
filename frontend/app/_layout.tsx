@@ -17,7 +17,7 @@ function BottomNav() {
         <Text style={styles.label}>Navigate</Text>
       </TouchableOpacity>
       <TouchableOpacity style={styles.navItem} onPress={() => router.push('/alerts')}>
-        <Text style={styles.icon}>👥</Text>
+        <Text style={styles.icon}>🚨</Text>
         <Text style={styles.label}>Community Alerts</Text>
       </TouchableOpacity>
       <TouchableOpacity style={styles.navItem} onPress={() => router.push('/dashboard')}>
@@ -44,8 +44,6 @@ export default function RootLayout() {
     })();
     return () => { mounted = false; };
   }, []);
-
-  // If the route is under /auth or is the index (root), don't show bottom nav
   const isAuthRoute = segments && segments[0] === 'auth';
   const isIndexRoute = (segments as any) && (segments as any).length === 0;
 

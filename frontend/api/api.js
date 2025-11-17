@@ -176,3 +176,43 @@ export const createAlertApi = async (alert) => {
     throw err;
   }
 };
+
+export const geocodeApi = async (query) => {
+  try {
+    const q = encodeURIComponent(query);
+    const res = await fetch(`${BASE_URL}/api/geocode?query=${q}`);
+    if (!res.ok) throw new Error('Geocode failed');
+    return await res.json();
+  } catch (err) {
+    console.error('geocodeApi error:', err);
+    return { suggestions: [] };
+  }
+};
+
+export const getDirectionsApi = async (fromLonLat, toLonLat, profiles = ['driving','walking'], mapFor) => {
+  try {
+    const profilesParam = profiles.join(',');
+    const mapForParam = mapFor ? `&mapFor=${encodeURIComponent(mapFor)}` : '';
+    const res = await fetch(`${BASE_URL}/api/directions?from=${fromLonLat}&to=${toLonLat}&profiles=${profilesParam}${mapForParam}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.message || 'Directions failed');
+    }
+    return await res.json();
+  } catch (err) {
+    console.error('getDirectionsApi error:', err);
+    return { routes: [], mapImage: null };
+  }
+};
+
+export const getMapboxTokenApi = async () => {
+  try {
+    const res = await fetch(`${BASE_URL}/api/mapbox-token`);
+    if (!res.ok) return null;
+    const j = await res.json();
+    return j.token || null;
+  } catch (err) {
+    console.error('getMapboxTokenApi error:', err);
+    return null;
+  }
+};

@@ -35,7 +35,6 @@ export default function Dashboard() {
   });
   const [preferencesChanged, setPreferencesChanged] = useState(false);
   const [routeQuery, setRouteQuery] = useState('');
-  // use Date objects (or null) for pickers
   const [routeDateFrom, setRouteDateFrom] = useState(null);
   const [routeDateTo, setRouteDateTo] = useState(null);
   const [showFromPicker, setShowFromPicker] = useState(false);
@@ -56,8 +55,6 @@ export default function Dashboard() {
     const hasChanged = JSON.stringify(preferences) !== JSON.stringify(originalPreferences);
     setPreferencesChanged(hasChanged);
   }, [preferences, originalPreferences]);
-
-  // Reset page when filters or routes change
   useEffect(() => {
     setRoutePage(0);
   }, [routeQuery, routeDateFrom, routeDateTo, routes]);
@@ -439,7 +436,7 @@ export default function Dashboard() {
           </View>
         </View>
 
-        {/* Calendar modals */}
+        {}
         {showFromPicker && (
           <CalendarModal visible={showFromPicker} date={routeDateFrom || new Date()} onClose={() => setShowFromPicker(false)} onSelect={(d) => setRouteDateFrom(d)} />
         )}

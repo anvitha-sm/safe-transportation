@@ -13,10 +13,7 @@ import {
 import { colors } from "./theme";
 import { BASE_URL } from '../api/api';
 import { router } from 'expo-router';
-import debounce from "lodash.debounce";
-
-// Note: This screen will try to use Expo Location if available. If not, it will
-// fall back to mock data so the UI remains functional during development.
+import debounce from "lodash.debounce";
 
 export default function Alerts() {
   const goBack = () => router.back();
@@ -51,9 +48,7 @@ export default function Alerts() {
     setLoading(true);
     try {
       let Location;
-      try {
-        // dynamic import — may fail when expo-location is not installed
-        // eslint-disable-next-line global-require, import/no-extraneous-dependencies
+      try {
         Location = require("expo-location");
       } catch (e) {
         Location = null;
@@ -68,13 +63,11 @@ export default function Alerts() {
           setCurrentCoords({ latitude: coords.latitude, longitude: coords.longitude });
           fetchAlertsNearby(coords.latitude, coords.longitude);
         } else {
-          // permission denied — still show recent alerts from backend
           setLocationGranted(false);
           setCurrentCoords(null);
           fetchAlertsNearby();
         }
       } else {
-        // No expo-location available — load recent alerts from backend
         setLocationGranted(false);
         setCurrentCoords(null);
         fetchAlertsNearby();
@@ -89,7 +82,6 @@ export default function Alerts() {
   const fetchAlertsNearby = async (lat, lon, highlightLocation) => {
     setLoading(true);
     try {
-      // Try backend endpoint first
       try {
         const params = [];
         if (lat != null && lon != null) {
@@ -98,14 +90,11 @@ export default function Alerts() {
         }
         if (selectedCategory && selectedCategory !== 'all') params.push(`category=${encodeURIComponent(selectedCategory)}`);
         if (selectedSeverity && selectedSeverity !== 'all') params.push(`severity=${encodeURIComponent(selectedSeverity)}`);
-        const url = params.length > 0 ? `${BASE_URL}/api/alerts?${params.join('&')}` : `${BASE_URL}/api/alerts`;
-        // debug
-        // console.log('fetchAlertsNearby url', url);
+        const url = params.length > 0 ? `${BASE_URL}/api/alerts?${params.join('&')}` : `${BASE_URL}/api/alerts`;
         const res = await fetch(url);
         if (res.ok) {
           const json = await res.json();
           const raw = Array.isArray(json.alerts) ? json.alerts : [];
-          // normalize backend alert shape to UI-friendly items
           const items = raw.map((a) => {
             const id = a._id || a.id || (a._id && String(a._id)) || Math.random().toString();
             const title = a.location || a.title || '';
@@ -121,32 +110,25 @@ export default function Alerts() {
             const category = a.category || '';
             const severity = a.severity || 'low';
             return { id, title, desc, latitude, longitude, distance, time, category, severity };
-          });
-          // If a highlightLocation (user selected a suggestion without coords) was provided,
-          // push alerts whose title/location matches the suggestion to the top.
+          });
           if (highlightLocation) {
             const hl = String(highlightLocation).toLowerCase();
             items.sort((x, y) => {
               const xm = x.title && x.title.toLowerCase().includes(hl) ? 0 : 1;
               const ym = y.title && y.title.toLowerCase().includes(hl) ? 0 : 1;
               if (xm !== ym) return xm - ym;
-              // otherwise sort by distance (nulls go last)
               const xd = x.distance != null ? x.distance : Number.POSITIVE_INFINITY;
               const yd = y.distance != null ? y.distance : Number.POSITIVE_INFINITY;
               return xd - yd;
             });
           }
-          // store full list and set first page
           setAllAlerts(items);
           setAlertsPage(0);
           setNearbyAlerts(items.slice(0, ALERTS_PAGE_SIZE));
           return;
         }
       } catch (_e) {
-        // ignore and fall back to mock
       }
-
-      // Fallback: generate mock alerts with distances
       let mocks = generateMockAlerts(lat ?? 37.7749, lon ?? -122.4194).sort((a, b) => a.distance - b.distance);
       if (highlightLocation) {
         const hl = String(highlightLocation).toLowerCase();
@@ -166,8 +148,6 @@ export default function Alerts() {
       if (mounted.current) setLoading(false);
     }
   };
-
-  // when allAlerts or alertsPage changes, update the displayed nearbyAlerts
   useEffect(() => {
     const start = alertsPage * ALERTS_PAGE_SIZE;
     const slice = allAlerts.slice(start, start + ALERTS_PAGE_SIZE);
@@ -175,7 +155,6 @@ export default function Alerts() {
   }, [allAlerts, alertsPage]);
 
   const generateMockAlerts = (lat, lon) => {
-    // deterministic mock alerts for dev — distances in meters
     const base = [
       { title: "Pothole reported", desc: "Large pothole near intersection", lat: lat + 0.001, lon: lon + 0.001 },
       { title: "Crowded sidewalk", desc: "Heavy foot traffic reported", lat: lat - 0.0008, lon: lon - 0.0004 },
@@ -194,9 +173,8 @@ export default function Alerts() {
   };
 
   const distanceBetween = (lat1, lon1, lat2, lon2) => {
-    // approximate haversine in km
     const toRad = (v) => (v * Math.PI) / 180;
-    const R = 6371; // km
+    const R = 6371;
     const dLat = toRad(lat2 - lat1);
     const dLon = toRad(lon2 - lon1);
     const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
@@ -204,12 +182,11 @@ export default function Alerts() {
     return R * c;
   };
 
-  /* ---------- Autocomplete / search ---------- */
+  
   const doAutocomplete = async (text) => {
     setSearchLoading(true);
     setSuggestions([]);
     try {
-      // If backend provides a geocode/autocomplete endpoint, call it
       try {
         const res = await fetch(`${BASE_URL}/api/geocode?query=${encodeURIComponent(text)}`);
         if (res.ok) {
@@ -220,10 +197,7 @@ export default function Alerts() {
           }
         }
       } catch (e) {
-        // ignore and fall back to simple suggs
       }
-
-      // Simple fallback suggestions (not real autocomplete)
       const fallback = [
         { place_name: `${text} Park`, center: [currentCoords?.longitude ?? -122.4194, currentCoords?.latitude ?? 37.7749] },
         { place_name: `${text} Station`, center: [(currentCoords?.longitude ?? -122.4194) + 0.005, (currentCoords?.latitude ?? 37.7749) - 0.003] },
@@ -235,8 +209,6 @@ export default function Alerts() {
       setSearchLoading(false);
     }
   };
-
-  // debounce user typing to avoid spamming autocomplete
   const debouncedAuto = useRef(debounce((t) => doAutocomplete(t), 400)).current;
 
   const onChangeQuery = (text) => {
@@ -252,29 +224,20 @@ export default function Alerts() {
     Keyboard.dismiss();
     setQuery(sugg.place_name || "");
     setSuggestions([]);
-    // center is [lon, lat]
     const lon = (sugg.center && sugg.center[0]);
     const lat = (sugg.center && sugg.center[1]);
     if (lat != null && lon != null) {
       fetchAlertsNearby(lat, lon, sugg.place_name);
     } else {
-      // No center coords returned (likely came from DB fallback). Fetch general list and highlight matching location.
       fetchAlertsNearby(null, null, sugg.place_name);
     }
   };
-
-  // re-fetch when category/severity filters change
   useEffect(() => {
     fetchAlertsNearby(currentCoords?.latitude ?? null, currentCoords?.longitude ?? null, null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedCategory, selectedSeverity, currentCoords?.latitude, currentCoords?.longitude]);
-
-  // when query or filters change, reset page
   useEffect(() => setAlertsPage(0), [query, selectedCategory, selectedSeverity]);
 
-  // loadMoreAlerts removed in favor of page-based prev/next
-
-  /* ---------- UI rendering helpers ---------- */
+  
   const renderAlert = ({ item }) => (
     <View style={styles.alertCard} key={item.id}>
       <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" }}>

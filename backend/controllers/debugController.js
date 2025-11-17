@@ -3,7 +3,6 @@ const bcrypt = require('bcryptjs');
 
 exports.seedDemoUser = async (req, res) => {
   try {
-    // Find or create a demo user
     let user = await User.findOne({ email: 'test@test.test' });
     if (!user) {
       const password = await bcrypt.hash('testtest', 10);
@@ -23,8 +22,6 @@ exports.seedDemoUser = async (req, res) => {
         routes: [],
       });
     }
-
-    // Add mock routes (overwrite existing demo routes for clarity)
     user.routes = [
       {
         _id: user._id + '_r1',

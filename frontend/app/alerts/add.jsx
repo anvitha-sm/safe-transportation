@@ -67,7 +67,6 @@ export default function AddAlert() {
       Alert.alert('Validation', 'Please provide location and description');
       return;
     }
-    // If coords are missing, try to geocode via backend
     if (!latitude || !longitude) {
       try {
         console.log('Attempting server geocode for', location, 'using', BASE_URL);
@@ -87,12 +86,9 @@ export default function AddAlert() {
       } catch (err) {
         console.warn('geocode fetch error', err);
       }
-      // important: don't block saving if geocode failed — allow alert to be saved without coords
       }
       if (!latitude || !longitude) {
-        // Proceed to save even when coordinates couldn't be determined. Backend accepts null coords.
         console.warn('No coordinates determined; proceeding to save alert without coordinates');
-        // continue to payload creation and save
       }
     setSaving(true);
     try {
@@ -121,9 +117,7 @@ export default function AddAlert() {
   const useDeviceLocation = async () => {
     try {
       let Location;
-      try {
-        // dynamic require in case expo-location isn't installed in all environments
-        // eslint-disable-next-line global-require, import/no-extraneous-dependencies
+      try {
         Location = require('expo-location');
       } catch (e) {
         Location = null;
@@ -145,10 +139,8 @@ export default function AddAlert() {
       if (coords) {
         setLatitude(coords.latitude);
         setLongitude(coords.longitude);
-        // provide a compact human-readable label so user knows what was used
         setLocation(`Current location • ${coords.latitude.toFixed(4)}, ${coords.longitude.toFixed(4)}`);
         setUsingGps(true);
-        // Also clear suggestions
         setSuggestions([]);
       }
     } catch (err) {
@@ -172,7 +164,6 @@ export default function AddAlert() {
         }
       }
     } catch (e) {
-      // ignore
     } finally {
       setSearchLoading(false);
     }
@@ -256,7 +247,7 @@ export default function AddAlert() {
         </View>
       )}
 
-      {/* Lat/Lon are derived from selected suggestion; users should pick a suggestion. */}
+      {}
 
       <Text style={[styles.label, { marginTop: 12 }]}>Description</Text>
       <TextInput style={[styles.input, { height: 120 }]} value={description} onChangeText={setDescription} multiline />

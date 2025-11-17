@@ -5,9 +5,7 @@ import { colors } from '../theme';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { addRouteFeedbackApi, getUserDataApi } from '../../api/api';
 
-export default function RouteFeedback() {
-  // Read query params from the URL for web; native expo-router's hook
-  // caused problems on web builds. This covers both environments for now.
+export default function RouteFeedback() {
   let userId = null;
   let routeId = null;
   if (typeof window !== 'undefined') {
@@ -38,7 +36,6 @@ export default function RouteFeedback() {
   const [routeInfo, setRouteInfo] = useState(null);
 
   useEffect(() => {
-    // Fetch existing feedback for this route (if any) and prefill sliders
     (async () => {
       if (!userId || !routeId) return;
       try {
@@ -46,7 +43,6 @@ export default function RouteFeedback() {
         if (resp && resp.user && Array.isArray(resp.user.routes)) {
             const route = resp.user.routes.find((r) => String(r._id) === String(routeId));
             if (route) {
-              // Save route metadata so the UI can show what the user is rating
               setRouteInfo({ start: route.start, end: route.end, date: route.date, mode: route.mode });
               if (route.feedback && route.feedback.ratings) {
                 const dbRatings = route.feedback.ratings;
@@ -75,8 +71,6 @@ export default function RouteFeedback() {
   };
 
   const clamp = (v) => Math.max(1, Math.min(10, Math.round(v)));
-
-  // Preference slider that mirrors Dashboard styles/behavior but for 1..10 scale
   const PreferenceSlider = ({ k }) => {
     const key = k;
     const [trackWidth, setTrackWidth] = useState(0);
@@ -158,7 +152,7 @@ export default function RouteFeedback() {
       await addRouteFeedbackApi(userId, routeId, { ratings, comments }, token);
       setSaving(false);
       Alert.alert('Saved', 'Your feedback has been saved.');
-      try { router.back(); } catch (_) { /* ignore */ }
+      try { router.back(); } catch (_) {  }
     } catch (err) {
       console.error('Failed to save feedback', err);
       setSaving(false);
