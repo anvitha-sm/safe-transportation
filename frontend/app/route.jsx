@@ -440,6 +440,9 @@ export default function RouteScreen() {
                     {item.profile === 'bus' && item.summary && (
                       <Text style={{ color: '#ec4899', fontWeight: '700', marginTop: 4 }}>{item.summary}</Text>
                     )}
+                    {item.profile === 'driving' && (
+                      <Text style={{ color: colors.textMuted, marginTop: 6, fontWeight: '700' }}>Rideshare: {item.rideshareEstimate != null ? item.rideshareEstimate : '—'}</Text>
+                    )}
                   </TouchableOpacity>
 
                   <View style={{ width: 120, alignItems: 'flex-end' }}>

@@ -1,9 +1,5 @@
-// Default to localhost, but when running inside Expo on a device/emulator
-// detect the dev host and use its IP so the app can reach the local backend.
 let BASE_URL = "http://localhost:5000";
 try {
-  // dynamic require so this file still works in environments without expo-constants
-  // (e.g., server-side tools). If present, derive the machine IP from debuggerHost.
   const Constants = require('expo-constants');
   const dbg = Constants.manifest && (Constants.manifest.debuggerHost || Constants.manifest.packagerOpts && Constants.manifest.packagerOpts.host);
   if (dbg && typeof dbg === 'string') {
@@ -13,7 +9,7 @@ try {
     }
   }
 } catch (_e) {
-  // ignore when expo-constants not available
+
 }
 export { BASE_URL };
 
@@ -219,7 +215,6 @@ export const getMapboxTokenApi = async () => {
 
 export const getBusDirectionsApi = async (fromLatLon, toLatLon, date, time) => {
   try {
-    // Convert fromLatLon (lat,lon) to lon,lat for backend
     const fromParts = fromLatLon.split(',').map(Number);
     const toParts = toLatLon.split(',').map(Number);
     const from = `${fromParts[1]},${fromParts[0]}`;

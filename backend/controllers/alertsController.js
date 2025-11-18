@@ -1,4 +1,3 @@
-// Fetch bus routes using Transitland API
 exports.busDirections = async (req, res) => {
     console.log('TRANSITLAND_TOKEN from env:', process.env.TRANSITLAND_TOKEN);
   try {
@@ -6,7 +5,7 @@ exports.busDirections = async (req, res) => {
     if (!from || !to) return res.status(400).json({ message: 'Missing from or to coordinates' });
     const token = process.env.TRANSITLAND_TOKEN;
     if (!token) return res.status(500).json({ message: 'Transitland token not configured on server' });
-    // Helper to get nearest stop from Transitland
+ 
     async function getNearestStop(lonlat) {
       const [lon, lat] = lonlat.split(',').map(Number);
       const stopsUrl = `https://transit.land/api/v2/rest/stops?lon=${lon}&lat=${lat}&r=1000&per_page=1&api_key=${token}`;
@@ -22,14 +21,13 @@ exports.busDirections = async (req, res) => {
       return lonlat;
     }
 
-    // Snap origin and destination to nearest stops
     const snappedFrom = await getNearestStop(from);
     const snappedTo = await getNearestStop(to);
     console.log('Snapped origin:', snappedFrom, 'Snapped destination:', snappedTo);
-    // Transitland Routing API expects lon,lat format
+
     const now = new Date();
-    const queryDate = date || now.toISOString().slice(0, 10); // YYYY-MM-DD
-    const queryTime = time || now.toTimeString().slice(0, 8); // HH:MM:SS
+    const queryDate = date || now.toISOString().slice(0, 10); 
+    const queryTime = time || now.toTimeString().slice(0, 8); 
     const url = `https://transit.land/api/v2/routing/otp/plan?fromPlace=${snappedFrom}&toPlace=${snappedTo}&date=${queryDate}&time=${queryTime}&api_key=${token}`;
     console.log('Transitland Routing API URL:', url);
     let resp = await fetch(url);
@@ -38,7 +36,7 @@ exports.busDirections = async (req, res) => {
     if (!resp.ok) {
       try { errorJson = JSON.parse(respText); } catch (e) {}
       console.warn('Transitland routing non-ok', respText);
-      // Log status, headers, and response for debugging
+
       console.warn('Transitland status:', resp.status);
       console.warn('Transitland headers:', JSON.stringify([...resp.headers]));
       if (errorJson) {
@@ -50,11 +48,11 @@ exports.busDirections = async (req, res) => {
     }
     console.log('Transitland Routing API response:', respText);
     const j = JSON.parse(respText);
-    // Parse and format itineraries for frontend
+
     const rawItins = j.plan?.itineraries || [];
-    // Limit to at most 2 bus itineraries per request
+
     const limited = rawItins.slice(0, 2);
-    // Simple polyline decoder (no external dependency)
+
     function decodePolyline(encoded) {
       if (!encoded) return [];
       let index = 0, lat = 0, lng = 0, coordinates = [];
@@ -74,20 +72,18 @@ exports.busDirections = async (req, res) => {
     }
 
     const itineraries = limited.map((itinerary) => {
-      // Build a single LineString geometry from legs' encoded points when available
       const coords = [];
       if (Array.isArray(itinerary.legs)) {
         for (const leg of itinerary.legs) {
             try {
               const pts = leg.legGeometry && leg.legGeometry.points;
               if (typeof pts === 'string' && pts.length > 0) {
-                const dec = decodePolyline(pts); // returns [lon, lat]
+                const dec = decodePolyline(pts);
                 coords.push(...dec);
               } else if (leg.geometry && leg.geometry.type === 'LineString' && Array.isArray(leg.geometry.coordinates)) {
                 coords.push(...leg.geometry.coordinates);
               }
             } catch (e) {
-              // ignore decoding errors for a leg
               console.warn('leg decode failed', e);
             }
         }
@@ -191,7 +187,6 @@ exports.geocode = async (req, res) => {
     if (!q) return res.json({ suggestions: [] });
     if (process.env.MAPBOX_TOKEN || process.env.MAPBOX_PUBLIC_TOKEN) {
       try {
-        // Prefer secret server token for server-to-server calls, but fall back to public token if that's all we have.
         const token = process.env.MAPBOX_TOKEN || process.env.MAPBOX_PUBLIC_TOKEN;
 
             const BBOX = [-119.9, 33.5, -117.4, 34.6];
@@ -272,7 +267,6 @@ exports.directions = async (req, res) => {
     const useProfiles = allowedProfiles.filter(p => supported.includes(p));
     if (useProfiles.length === 0) useProfiles.push('driving');
 
-    // Use MAPBOX_TOKEN (secret) for server-side requests when available, otherwise fall back to MAPBOX_PUBLIC_TOKEN.
     const token = process.env.MAPBOX_TOKEN || process.env.MAPBOX_PUBLIC_TOKEN;
     if (!token) {
       return res.status(500).json({ message: 'Mapbox token not configured on server' });
@@ -285,7 +279,6 @@ exports.directions = async (req, res) => {
         if (profile === 'driving' && noHighways) {
           excludeParam = '&exclude=highways';
         }
-        // For driving, request alternatives so we can return up to 3 routes
         const alternativesParam = profile === 'driving' ? '&alternatives=true' : '&alternatives=false';
         const url = `https://api.mapbox.com/directions/v5/mapbox/${profile}/${from};${to}?geometries=polyline&overview=full${alternativesParam}${excludeParam}&access_token=${token}`;
         const resp = await fetch(url);
@@ -296,15 +289,14 @@ exports.directions = async (req, res) => {
         const j = await resp.json();
         const routes = j.routes || [];
         if (routes.length > 0) {
-          // For driving, include up to 3 alternatives; for others include the first
-          const take = profile === 'driving' ? routes.slice(0, 3) : [routes[0]];
+          const take = profile === 'driving' ? routes.slice(0, 2) : [routes[0]];
           take.forEach((route, idx) => {
             results.push({
               profile,
               distance: route.distance,
               duration: route.duration,
               geometry: route.geometry,
-              // include index to help frontend create unique keys if needed
+
               routeIndex: idx,
             });
           });
@@ -314,11 +306,17 @@ exports.directions = async (req, res) => {
       }
     }
     const [minLon, minLat, maxLon, maxLat] = [-119.9, 33.5, -117.4, 34.6];
-    const parseLonLat = (str) => str.split(',').map(s => parseFloat(s.trim()));
-    const fromArr = parseLonLat(from);
-    const toArr = parseLonLat(to);
-    const inBBox = (pt) => pt && pt.length === 2 && pt[0] >= minLon && pt[0] <= maxLon && pt[1] >= minLat && pt[1] <= maxLat;
-    if (!inBBox(fromArr) || !inBBox(toArr)) {
+
+    const parseLonLat = (str) => {
+      const parts = str.split(',').map(s => parseFloat(s.trim()));
+      return { lon: parts[0], lat: parts[1] };
+    };
+    const fromPt = parseLonLat(from);
+    const toPt = parseLonLat(to);
+    console.log('directions: parsed fromPt=', fromPt, 'toPt=', toPt, 'bounds=', { minLon, minLat, maxLon, maxLat });
+    const inBBox = (pt) => pt && typeof pt.lon === 'number' && typeof pt.lat === 'number' && pt.lon >= minLon && pt.lon <= maxLon && pt.lat >= minLat && pt.lat <= maxLat;
+    console.log('directions: inBBox from=', inBBox(fromPt), 'to=', inBBox(toPt));
+    if (!inBBox(fromPt) || !inBBox(toPt)) {
       return res.status(400).json({ message: 'From and To must be within the Southern California area (Santa Barbara -> Irvine).' });
     }
     let mapImageDataUrl = null;
@@ -327,16 +325,16 @@ exports.directions = async (req, res) => {
         const first = results[0];
 
         const encoded = encodeURIComponent(first.geometry);
-        const parseLonLat = (str) => str.split(',').map(s => parseFloat(s.trim()));
-        const fromPt = parseLonLat(from);
-        const toPt = parseLonLat(to);
-        const centerLon = (fromPt[0] + toPt[0]) / 2;
-        const centerLat = (fromPt[1] + toPt[1]) / 2;
+
+        const fromLonLatStr = `${fromPt.lon},${fromPt.lat}`;
+        const toLonLatStr = `${toPt.lon},${toPt.lat}`;
+        const centerLon = (fromPt.lon + toPt.lon) / 2;
+        const centerLat = (fromPt.lat + toPt.lat) / 2;
         const toRad = (v) => (v * Math.PI) / 180;
         const R = 6371;
-        const dLat = toRad(toPt[1] - fromPt[1]);
-        const dLon = toRad(toPt[0] - fromPt[0]);
-        const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(toRad(fromPt[1])) * Math.cos(toRad(toPt[1])) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+        const dLat = toRad(toPt.lat - fromPt.lat);
+        const dLon = toRad(toPt.lon - fromPt.lon);
+        const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(toRad(fromPt.lat)) * Math.cos(toRad(toPt.lat)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
         const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
         const distanceMeters = R * c * 1000;
         const getZoomForDistance = (m) => {
@@ -356,7 +354,7 @@ exports.directions = async (req, res) => {
         let zoom = getZoomForDistance(distanceMeters) - 1;
         if (zoom < 7) zoom = 7;
 
-        const staticUrl = `https://api.mapbox.com/styles/v1/mapbox/streets-v11/static/path-5+f44-0.6(${encoded}),pin-s-a+000(${from}),pin-s-b+000(${to})/${centerLon},${centerLat},${zoom}/600x300?access_token=${token}`;
+        const staticUrl = `https://api.mapbox.com/styles/v1/mapbox/streets-v11/static/path-5+f44-0.6(${encoded}),pin-s-a+000(${fromLonLatStr}),pin-s-b+000(${toLonLatStr})/${centerLon},${centerLat},${zoom}/600x300?access_token=${token}`;
         const imgResp = await fetch(staticUrl);
         if (imgResp.ok) {
           const buffer = await imgResp.arrayBuffer();
@@ -367,6 +365,32 @@ exports.directions = async (req, res) => {
       } catch (err) {
         console.warn('Failed to fetch static map image', err);
       }
+    }
+
+    try {
+      const BASE = 1.65;
+      const COST_PER_MIN = 0.24;
+      const COST_PER_MILE = 1.16;
+
+      const drivingRoutes = results.filter(r => r.profile === 'driving');
+      if (drivingRoutes.length > 0) {
+        let fastest = drivingRoutes[0];
+        for (const r of drivingRoutes) {
+          if (r.duration != null && fastest.duration != null && r.duration < fastest.duration) fastest = r;
+        }
+
+        const meters = Number(fastest.distance || 0);
+        const seconds = Number(fastest.duration || 0);
+        const miles = meters / 1609.34;
+        const minutes = seconds / 60;
+
+        const rawPrice = BASE + (COST_PER_MILE * miles) + (COST_PER_MIN * minutes);
+
+        const price = Math.max(0, Math.round(rawPrice * 100) / 100);
+        fastest.rideshareEstimate = `$${price.toFixed(2)}`;
+      }
+    } catch (e) {
+      console.warn('Failed to compute local rideshare estimate', e);
     }
 
     res.json({ routes: results, mapImage: mapImageDataUrl });
