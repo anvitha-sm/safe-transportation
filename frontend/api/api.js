@@ -189,11 +189,11 @@ export const geocodeApi = async (query) => {
   }
 };
 
-export const getDirectionsApi = async (fromLonLat, toLonLat, profiles = ['driving','walking'], mapFor) => {
+export const getDirectionsApi = async (fromLonLat, toLonLat, profiles = ['driving','walking'], mapFor, extraParams = '') => {
   try {
     const profilesParam = profiles.join(',');
     const mapForParam = mapFor ? `&mapFor=${encodeURIComponent(mapFor)}` : '';
-    const res = await fetch(`${BASE_URL}/api/directions?from=${fromLonLat}&to=${toLonLat}&profiles=${profilesParam}${mapForParam}`);
+      const res = await fetch(`${BASE_URL}/api/directions?from=${fromLonLat}&to=${toLonLat}&profiles=${profilesParam}${mapForParam}${extraParams}`);
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.message || 'Directions failed');
@@ -214,5 +214,27 @@ export const getMapboxTokenApi = async () => {
   } catch (err) {
     console.error('getMapboxTokenApi error:', err);
     return null;
+  }
+};
+
+export const getBusDirectionsApi = async (fromLatLon, toLatLon, date, time) => {
+  try {
+    // Convert fromLatLon (lat,lon) to lon,lat for backend
+    const fromParts = fromLatLon.split(',').map(Number);
+    const toParts = toLatLon.split(',').map(Number);
+    const from = `${fromParts[1]},${fromParts[0]}`;
+    const to = `${toParts[1]},${toParts[0]}`;
+    let url = `${BASE_URL}/api/bus-directions?from=${from}&to=${to}`;
+    if (date) url += `&date=${date}`;
+    if (time) url += `&time=${time}`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.message || 'Bus directions failed');
+    }
+    return await res.json();
+  } catch (err) {
+    console.error('getBusDirectionsApi error:', err);
+    return { routes: [] };
   }
 };

@@ -1,3 +1,119 @@
+// Fetch bus routes using Transitland API
+exports.busDirections = async (req, res) => {
+    console.log('TRANSITLAND_TOKEN from env:', process.env.TRANSITLAND_TOKEN);
+  try {
+    const { from, to, date, time } = req.query;
+    if (!from || !to) return res.status(400).json({ message: 'Missing from or to coordinates' });
+    const token = process.env.TRANSITLAND_TOKEN;
+    if (!token) return res.status(500).json({ message: 'Transitland token not configured on server' });
+    // Helper to get nearest stop from Transitland
+    async function getNearestStop(lonlat) {
+      const [lon, lat] = lonlat.split(',').map(Number);
+      const stopsUrl = `https://transit.land/api/v2/rest/stops?lon=${lon}&lat=${lat}&r=1000&per_page=1&api_key=${token}`;
+      const stopsResp = await fetch(stopsUrl);
+      const stopsJson = await stopsResp.json();
+      console.log('Transitland stops API response:', stopsJson);
+      if (stopsJson.stops && stopsJson.stops.length > 0) {
+        const stop = stopsJson.stops[0];
+        console.log('Snapped to stop:', stop.name, stop.lon, stop.lat);
+        return `${stop.lon},${stop.lat}`;
+      }
+      console.log('No nearby stop found, using original coordinates');
+      return lonlat;
+    }
+
+    // Snap origin and destination to nearest stops
+    const snappedFrom = await getNearestStop(from);
+    const snappedTo = await getNearestStop(to);
+    console.log('Snapped origin:', snappedFrom, 'Snapped destination:', snappedTo);
+    // Transitland Routing API expects lon,lat format
+    const now = new Date();
+    const queryDate = date || now.toISOString().slice(0, 10); // YYYY-MM-DD
+    const queryTime = time || now.toTimeString().slice(0, 8); // HH:MM:SS
+    const url = `https://transit.land/api/v2/routing/otp/plan?fromPlace=${snappedFrom}&toPlace=${snappedTo}&date=${queryDate}&time=${queryTime}&api_key=${token}`;
+    console.log('Transitland Routing API URL:', url);
+    let resp = await fetch(url);
+    let respText = await resp.text();
+    let errorJson = null;
+    if (!resp.ok) {
+      try { errorJson = JSON.parse(respText); } catch (e) {}
+      console.warn('Transitland routing non-ok', respText);
+      // Log status, headers, and response for debugging
+      console.warn('Transitland status:', resp.status);
+      console.warn('Transitland headers:', JSON.stringify([...resp.headers]));
+      if (errorJson) {
+        console.warn('Transitland error JSON:', errorJson);
+      } else {
+        console.warn('Transitland error not JSON:', respText);
+      }
+      return res.status(500).json({ message: 'Failed to fetch bus routes', details: respText, status: resp.status });
+    }
+    console.log('Transitland Routing API response:', respText);
+    const j = JSON.parse(respText);
+    // Parse and format itineraries for frontend
+    const rawItins = j.plan?.itineraries || [];
+    // Limit to at most 2 bus itineraries per request
+    const limited = rawItins.slice(0, 2);
+    // Simple polyline decoder (no external dependency)
+    function decodePolyline(encoded) {
+      if (!encoded) return [];
+      let index = 0, lat = 0, lng = 0, coordinates = [];
+      const length = encoded.length;
+      while (index < length) {
+        let b, shift = 0, result = 0;
+        do { b = encoded.charCodeAt(index++) - 63; result |= (b & 0x1f) << shift; shift += 5; } while (b >= 0x20);
+        const deltaLat = ((result & 1) ? ~(result >> 1) : (result >> 1));
+        lat += deltaLat;
+        shift = 0; result = 0;
+        do { b = encoded.charCodeAt(index++) - 63; result |= (b & 0x1f) << shift; shift += 5; } while (b >= 0x20);
+        const deltaLng = ((result & 1) ? ~(result >> 1) : (result >> 1));
+        lng += deltaLng;
+        coordinates.push([lng / 1e5, lat / 1e5]);
+      }
+      return coordinates;
+    }
+
+    const itineraries = limited.map((itinerary) => {
+      // Build a single LineString geometry from legs' encoded points when available
+      const coords = [];
+      if (Array.isArray(itinerary.legs)) {
+        for (const leg of itinerary.legs) {
+            try {
+              const pts = leg.legGeometry && leg.legGeometry.points;
+              if (typeof pts === 'string' && pts.length > 0) {
+                const dec = decodePolyline(pts); // returns [lon, lat]
+                coords.push(...dec);
+              } else if (leg.geometry && leg.geometry.type === 'LineString' && Array.isArray(leg.geometry.coordinates)) {
+                coords.push(...leg.geometry.coordinates);
+              }
+            } catch (e) {
+              // ignore decoding errors for a leg
+              console.warn('leg decode failed', e);
+            }
+        }
+      }
+      const geo = coords.length > 0 ? { type: 'LineString', coordinates: coords } : null;
+      return {
+        duration: itinerary.duration,
+        distance: itinerary.distance,
+        startTime: itinerary.startTime,
+        endTime: itinerary.endTime,
+        walkTime: itinerary.walkTime,
+        walkDistance: itinerary.walkDistance,
+        transitTime: itinerary.transitTime,
+        transitDistance: itinerary.transitDistance,
+        waitingTime: itinerary.waitingTime,
+        transfers: itinerary.transfers,
+        legs: itinerary.legs,
+        geometry: geo,
+      };
+    });
+    res.json({ routes: itineraries });
+  } catch (err) {
+    console.error('busDirections proxy error', err);
+    res.status(500).json({ message: 'Failed to get bus directions' });
+  }
+};
 const CommunityAlert = require('../models/CommunityAlert');
 
 function distanceMeters(lat1, lon1, lat2, lon2) {
@@ -71,11 +187,12 @@ exports.listAlerts = async (req, res) => {
 exports.geocode = async (req, res) => {
   try {
     const q = (req.query.query || "").trim();
-    console.log('geocode called with query=', q, 'MAPBOX_TOKEN present=', !!process.env.MAPBOX_TOKEN);
+    console.log('geocode called with query=', q, 'MAPBOX_TOKEN present=', !!(process.env.MAPBOX_TOKEN || process.env.MAPBOX_PUBLIC_TOKEN));
     if (!q) return res.json({ suggestions: [] });
-    if (process.env.MAPBOX_TOKEN) {
+    if (process.env.MAPBOX_TOKEN || process.env.MAPBOX_PUBLIC_TOKEN) {
       try {
-        const token = process.env.MAPBOX_TOKEN;
+        // Prefer secret server token for server-to-server calls, but fall back to public token if that's all we have.
+        const token = process.env.MAPBOX_TOKEN || process.env.MAPBOX_PUBLIC_TOKEN;
 
             const BBOX = [-119.9, 33.5, -117.4, 34.6];
             const bboxParam = BBOX.join(',');
@@ -155,28 +272,41 @@ exports.directions = async (req, res) => {
     const useProfiles = allowedProfiles.filter(p => supported.includes(p));
     if (useProfiles.length === 0) useProfiles.push('driving');
 
-    if (!process.env.MAPBOX_TOKEN) {
+    // Use MAPBOX_TOKEN (secret) for server-side requests when available, otherwise fall back to MAPBOX_PUBLIC_TOKEN.
+    const token = process.env.MAPBOX_TOKEN || process.env.MAPBOX_PUBLIC_TOKEN;
+    if (!token) {
       return res.status(500).json({ message: 'Mapbox token not configured on server' });
     }
-
-    const token = process.env.MAPBOX_TOKEN;
     const results = [];
+    const noHighways = req.query.noHighways === 'true';
     for (const profile of useProfiles) {
       try {
-        const url = `https://api.mapbox.com/directions/v5/mapbox/${profile}/${from};${to}?geometries=polyline&overview=full&alternatives=false&access_token=${token}`;
+        let excludeParam = '';
+        if (profile === 'driving' && noHighways) {
+          excludeParam = '&exclude=highways';
+        }
+        // For driving, request alternatives so we can return up to 3 routes
+        const alternativesParam = profile === 'driving' ? '&alternatives=true' : '&alternatives=false';
+        const url = `https://api.mapbox.com/directions/v5/mapbox/${profile}/${from};${to}?geometries=polyline&overview=full${alternativesParam}${excludeParam}&access_token=${token}`;
         const resp = await fetch(url);
         if (!resp.ok) {
           console.warn('Mapbox directions non-ok', await resp.text());
           continue;
         }
         const j = await resp.json();
-        const route = (j.routes && j.routes[0]) || null;
-        if (route) {
-          results.push({
-            profile,
-            distance: route.distance,
-            duration: route.duration,
-            geometry: route.geometry,
+        const routes = j.routes || [];
+        if (routes.length > 0) {
+          // For driving, include up to 3 alternatives; for others include the first
+          const take = profile === 'driving' ? routes.slice(0, 3) : [routes[0]];
+          take.forEach((route, idx) => {
+            results.push({
+              profile,
+              distance: route.distance,
+              duration: route.duration,
+              geometry: route.geometry,
+              // include index to help frontend create unique keys if needed
+              routeIndex: idx,
+            });
           });
         }
       } catch (err) {

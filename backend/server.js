@@ -1,3 +1,4 @@
+
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
@@ -16,12 +17,15 @@ app.use((req, res, next) => {
   next();
 });
 
+app.get("/api/bus-directions", alertsController.busDirections);
 app.get("/ping", (req, res) => {
   res.json({ message: "backend is working" });
 });
 
 app.get('/api/mapbox-token', (req, res) => {
-  if (process.env.MAPBOX_TOKEN) return res.json({ token: process.env.MAPBOX_TOKEN });
+  
+  if (process.env.MAPBOX_PUBLIC_TOKEN) return res.json({ token: process.env.MAPBOX_PUBLIC_TOKEN });
+  if (process.env.MAPBOX_TOKEN && process.env.MAPBOX_TOKEN.indexOf('pk.') === 0) return res.json({ token: process.env.MAPBOX_TOKEN });
   return res.status(404).json({ token: null });
 });
 
@@ -31,6 +35,7 @@ app.get("/api/geocode", alertsController.geocode);
 app.get("/api/directions", alertsController.directions);
 app.use('/api/debug', debugRoutes);
 const startServer = () => {
+  console.log('Loaded environment variables:', process.env);
   const port = process.env.PORT || 5000;
   app.listen(port, '0.0.0.0', () => {
     console.log(`Server running on port ${port} (bound to 0.0.0.0)`);
