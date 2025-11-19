@@ -8,10 +8,12 @@ const authRoutes = require("./routes/auth");
 const alertsRoutes = require("./routes/alerts");
 const alertsController = require("./controllers/alertsController");
 const debugRoutes = require("./routes/debug");
+const cleanlinessRoutes = require("./routes/cleanliness");
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+// accept larger JSON bodies for GeoJSON imports
+app.use(express.json({ limit: '50mb' }));
 app.use((req, res, next) => {
   try { console.log('REQ', req.method, req.path); } catch (e) {}
   next();
@@ -31,6 +33,7 @@ app.get('/api/mapbox-token', (req, res) => {
 
 app.use("/api/auth", authRoutes);
 app.use("/api/alerts", alertsRoutes);
+app.use('/api/cleanliness', cleanlinessRoutes);
 app.get("/api/geocode", alertsController.geocode);
 app.get("/api/directions", alertsController.directions);
 app.use('/api/debug', debugRoutes);

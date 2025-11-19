@@ -1,5 +1,6 @@
 const User = require('../models/User');
 const bcrypt = require('bcryptjs');
+const StreetCleanliness = require('../models/StreetCleanliness');
 
 exports.seedDemoUser = async (req, res) => {
   try {
@@ -60,5 +61,16 @@ exports.seedDemoUser = async (req, res) => {
   } catch (err) {
     console.error('seedDemoUser error', err);
     res.status(500).json({ message: 'Failed to seed demo user' });
+  }
+};
+
+exports.getCleanlinessInfo = async (req, res) => {
+  try {
+    const count = await StreetCleanliness.countDocuments();
+    const one = await StreetCleanliness.findOne().lean();
+    return res.json({ count, sample: one ? { properties: one.properties || null, geometryType: one.geometry && one.geometry.type, coordinatesPreview: (one.geometry && Array.isArray(one.geometry.coordinates)) ? one.geometry.coordinates.slice(0,3) : null } : null });
+  } catch (err) {
+    console.error('getCleanlinessInfo error', err);
+    return res.status(500).json({ message: 'Failed to fetch cleanliness info' });
   }
 };

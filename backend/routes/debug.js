@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
-const { seedDemoUser } = require('../controllers/debugController');
+const { seedDemoUser, getCleanlinessInfo } = require('../controllers/debugController');
 router.get('/seed', seedDemoUser);
+router.get('/cleanliness', getCleanlinessInfo);
 
 module.exports = router;

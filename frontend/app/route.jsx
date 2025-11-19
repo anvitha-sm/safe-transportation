@@ -192,6 +192,7 @@ function buildMapHtml(token, initialPayload) {
 
 export default function RouteScreen() {
   const [userName, setUserName] = useState('');
+  const [userSafetyPref, setUserSafetyPref] = useState(10); // cleanliness preference (0-20)
   const [fromText, setFromText] = useState('');
   const [toText, setToText] = useState('');
   const [fromCoords, setFromCoords] = useState(null);
@@ -212,6 +213,17 @@ export default function RouteScreen() {
   const [mapImage, setMapImage] = useState(null);
 
   useEffect(() => { (async () => { try { const ud = await AsyncStorage.getItem('@user_data'); if (ud) { const parsed = JSON.parse(ud); setUserName(parsed.name || parsed.username || ''); } } catch (_e) {} })(); }, []);
+  // load user's safety/cleanliness preference if available
+  useEffect(() => { (async () => {
+    try {
+      const ud = await AsyncStorage.getItem('@user_data');
+      if (!ud) return;
+      const parsed = JSON.parse(ud);
+      // preferences may be nested under parsed.preferences.cleanliness or a top-level cleanliness key
+      const pref = parsed?.preferences?.cleanliness ?? parsed?.cleanliness ?? null;
+      if (pref != null) setUserSafetyPref(Number(pref));
+    } catch (_e) { }
+  })(); }, []);
 
   useEffect(() => {
     let t = null;
@@ -318,6 +330,64 @@ export default function RouteScreen() {
     fetchRoutes();
   }, [fromCoords, toCoords, webviewReady]);
 
+  // Ensure we have safety scores for routes that came back without one.
+  // For any driving route missing `safetyScore`, request directions again with `matchMode=thorough`
+  // and copy the safety fields onto the existing route object. This helps ensure routes
+  // such as De Neve Drive → The Grove have non-null safety values.
+  useEffect(() => {
+    if (!fromCoords || !toCoords || !routes || routes.length === 0) return;
+
+    const missing = routes.filter(r => r.profile === 'driving' && r.safetyScore == null && !r._safetyFetchInProgress && !r._safetyFetchTried);
+    if (missing.length === 0) return;
+
+    // Mark missing routes as in-progress and tried to avoid duplicate fetches
+    setRoutes(prev => prev.map(p => (p.profile === 'driving' && p.safetyScore == null) ? { ...p, _safetyFetchInProgress: true, _safetyFetchTried: true } : p));
+
+    (async () => {
+      try {
+        // Request thorough driving directions for this from/to specifically
+        const from = `${fromCoords[0]},${fromCoords[1]}`;
+        const to = `${toCoords[0]},${toCoords[1]}`;
+        const res = await getDirectionsApi(from, to, ['driving'], null, '&matchMode=thorough');
+        if (res && Array.isArray(res.routes) && res.routes.length > 0) {
+          // Map returned routes by profile and choose best candidate for each missing route
+          for (const missingRoute of missing) {
+            // Find the candidate closest in distance to the original route
+            const candidates = res.routes.filter(x => x.profile === missingRoute.profile);
+            if (candidates.length === 0) continue;
+            let best = candidates[0];
+            let bestDiff = Math.abs((best.distance || 0) - (missingRoute.distance || 0));
+            for (const c of candidates) {
+              const d = Math.abs((c.distance || 0) - (missingRoute.distance || 0));
+              if (d < bestDiff) { best = c; bestDiff = d; }
+            }
+            // Copy safety-related fields onto the route in state
+            setRoutes(prev => prev.map(p => {
+              if (p.key === missingRoute.key) {
+                return {
+                  ...p,
+                  safetyScore: best.safetyScore != null ? best.safetyScore : p.safetyScore,
+                  safetyDescription: best.safetyDescription || p.safetyDescription,
+                  avgStreetScore: best.avgStreetScore != null ? best.avgStreetScore : p.avgStreetScore,
+                  safetyMatchedCount: best.safetyMatchedCount != null ? best.safetyMatchedCount : p.safetyMatchedCount,
+                  safetyMatchedDistance: best.safetyMatchedDistance != null ? best.safetyMatchedDistance : p.safetyMatchedDistance,
+                    _safetyFetchInProgress: false,
+                    _safetyFetchTried: true
+                };
+              }
+              return p;
+            }));
+          }
+        }
+      } catch (e) {
+        console.warn('failed to fetch thorough safety for missing routes', e);
+      } finally {
+        // Clear in-progress flag for any remaining marked routes
+        setRoutes(prev => prev.map(p => (p._safetyFetchInProgress ? { ...p, _safetyFetchInProgress: false } : p)));
+      }
+    })();
+  }, [routes, fromCoords, toCoords]);
+
   useEffect(() => { (async () => { try { const t = await getMapboxTokenApi(); console.log('[Route] mapbox token fetched:', t ? (typeof t === 'string' ? (t.slice(0,4) + '...') : String(t)) : 'null'); setMapboxToken(t); } catch (_e) { console.warn('[Route] failed to fetch mapbox token'); } })(); }, []);
 
   useEffect(() => { if (webviewReady && pendingPayload && webviewRef.current) { try { webviewRef.current.postMessage(JSON.stringify(pendingPayload)); } catch (_e) {} setPendingPayload(null); } }, [webviewReady, pendingPayload]);
@@ -422,6 +492,28 @@ export default function RouteScreen() {
             if (item.profile === 'bus') {
               label = `BUS ${item._busKey ? item._busKey.replace('bus','') : ''}`;
             }
+            // normalize user safety preference (expected 0..20 slider) to 0..1 multiplier
+            const prefMultiplier = Math.max(0, Math.min(Number(userSafetyPref || 0), 20)) / 20;
+            const yourScore = (item.safetyScore != null) ? (Number(item.safetyScore) * prefMultiplier) : null;
+            // Prepare a safety display value that is never null: prefer safetyScore, otherwise show
+            // fetching state or derive a heuristic from avgStreetScore when available.
+            let safetyDisplay = '—';
+            if (item.safetyScore != null) {
+              try { safetyDisplay = Number(item.safetyScore).toFixed(3); } catch (_e) { safetyDisplay = String(item.safetyScore); }
+            } else if (item._safetyFetchInProgress) {
+              safetyDisplay = 'Fetching...';
+            } else if (item.avgStreetScore != null) {
+              const avg = Number(item.avgStreetScore);
+              // If avg looks like a CSGrade (1..3), map to 0..1 where 1 is best.
+              if (!Number.isNaN(avg) && avg <= 3) {
+                const norm = (3 - avg) / 2; // 1 -> 1.0, 2 -> 0.5, 3 -> 0.0
+                safetyDisplay = norm.toFixed(3) + ' (from avg)';
+              } else if (!Number.isNaN(avg)) {
+                // Otherwise assume 0..100 scale and normalize
+                const norm = Math.max(0, Math.min(avg, 100)) / 100;
+                safetyDisplay = norm.toFixed(3) + ' (from avg)';
+              }
+            }
             return (
               <View style={[styles.routeCard, isSelected && styles.routeCardSelected]}>
                 <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -441,7 +533,16 @@ export default function RouteScreen() {
                       <Text style={{ color: '#ec4899', fontWeight: '700', marginTop: 4 }}>{item.summary}</Text>
                     )}
                     {item.profile === 'driving' && (
-                      <Text style={{ color: colors.textMuted, marginTop: 6, fontWeight: '700' }}>Rideshare: {item.rideshareEstimate != null ? item.rideshareEstimate : '—'}</Text>
+                      <View style={{ marginTop: 6 }}>
+                        <Text style={{ color: colors.textMuted, fontWeight: '700' }}>Rideshare: {item.rideshareEstimate != null ? item.rideshareEstimate : '—'}</Text>
+                        {item.avgStreetScore != null && (
+                          <Text style={{ color: colors.textMuted, marginTop: 4 }}>Avg street score: {Number(item.avgStreetScore).toFixed(2)} (1=best, 3=worst)</Text>
+                        )}
+                        <Text style={{ color: colors.textMuted, marginTop: 4 }}>Safety: {safetyDisplay} {item.safetyDescription ? '• ' + item.safetyDescription : ''}</Text>
+                        {yourScore != null && (
+                          <Text style={{ color: colors.textMuted, marginTop: 4 }}>Your Score: {Number(yourScore).toFixed(3)}</Text>
+                        )}
+                      </View>
                     )}
                   </TouchableOpacity>
 
