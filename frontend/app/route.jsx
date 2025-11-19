@@ -337,11 +337,11 @@ export default function RouteScreen() {
   useEffect(() => {
     if (!fromCoords || !toCoords || !routes || routes.length === 0) return;
 
-    const missing = routes.filter(r => r.profile === 'driving' && r.safetyScore == null && !r._safetyFetchInProgress && !r._safetyFetchTried);
+    const missing = routes.filter(r => (r.profile === 'driving' || r.profile === 'walking') && r.safetyScore == null && !r._safetyFetchInProgress && !r._safetyFetchTried);
     if (missing.length === 0) return;
 
     // Mark missing routes as in-progress and tried to avoid duplicate fetches
-    setRoutes(prev => prev.map(p => (p.profile === 'driving' && p.safetyScore == null) ? { ...p, _safetyFetchInProgress: true, _safetyFetchTried: true } : p));
+    setRoutes(prev => prev.map(p => ((p.profile === 'driving' || p.profile === 'walking') && p.safetyScore == null) ? { ...p, _safetyFetchInProgress: true, _safetyFetchTried: true } : p));
 
     (async () => {
       try {
@@ -532,9 +532,11 @@ export default function RouteScreen() {
                     {item.profile === 'bus' && item.summary && (
                       <Text style={{ color: '#ec4899', fontWeight: '700', marginTop: 4 }}>{item.summary}</Text>
                     )}
-                    {item.profile === 'driving' && (
+                    {(item.profile === 'driving' || item.profile === 'walking') && (
                       <View style={{ marginTop: 6 }}>
-                        <Text style={{ color: colors.textMuted, fontWeight: '700' }}>Rideshare: {item.rideshareEstimate != null ? item.rideshareEstimate : '—'}</Text>
+                        {item.profile === 'driving' && (
+                          <Text style={{ color: colors.textMuted, fontWeight: '700' }}>Rideshare: {item.rideshareEstimate != null ? item.rideshareEstimate : '—'}</Text>
+                        )}
                         {item.avgStreetScore != null && (
                           <Text style={{ color: colors.textMuted, marginTop: 4 }}>Avg street score: {Number(item.avgStreetScore).toFixed(2)} (1=best, 3=worst)</Text>
                         )}
