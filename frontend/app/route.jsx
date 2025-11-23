@@ -8,7 +8,6 @@ import { geocodeApi, getDirectionsApi, getMapboxTokenApi, getBusDirectionsApi } 
 function buildMapHtml(token, initialPayload) {
   const safeToken = token || '';
   const init = initialPayload || 'null';
-  // If a secret token is provided, return a helpful HTML page instead of trying to init Mapbox GL.
   if (safeToken.indexOf('sk.') === 0) {
     return `<!doctype html>
     <html>
@@ -83,8 +82,6 @@ function buildMapHtml(token, initialPayload) {
       function renderRoutes(data) {
         try {
           clearAllRoutes();
-          // Pin colors by route type
-          // Use lighter purple for all pins
           const pinColor = '#a78bfa';
           if (data.from) {
             if (window.fromMarker) window.fromMarker.remove();
@@ -106,7 +103,6 @@ function buildMapHtml(token, initialPayload) {
             data.routes.forEach((r, idx) => {
               try {
                 let coords = [];
-                // If geometry is an encoded polyline string
                 if (typeof r.geometry === 'string' && r.geometry.length > 0) {
                   try {
                     coords = polyline.decode(r.geometry).map(c => [c[1], c[0]]);
@@ -114,7 +110,6 @@ function buildMapHtml(token, initialPayload) {
                 } else if (r.geometry && r.geometry.type === 'LineString' && Array.isArray(r.geometry.coordinates)) {
                   coords = r.geometry.coordinates;
                 } else if (r.legs && r.legs.length > 0) {
-                  // Try to assemble from legGeometry points
                   for (const leg of r.legs) {
                     const pts = leg.legGeometry && leg.legGeometry.points;
                     if (typeof pts === 'string' && pts.length > 0) {
@@ -126,7 +121,6 @@ function buildMapHtml(token, initialPayload) {
                   }
                 }
                 if (!coords || coords.length === 0) {
-                  // Nothing to draw for this route
                   return;
                 }
                 allCoords.push(...coords);
@@ -140,16 +134,13 @@ function buildMapHtml(token, initialPayload) {
                   try { map.removeSource(srcId); } catch (e) {}
                 }
                 map.addSource(srcId, { type: 'geojson', data: { type: 'Feature', geometry: { type: 'LineString', coordinates: coords } } });
-                // Color by route type
                 let color = '#7c3aed'; // default purple
                 if (r.profile === 'driving') color = '#7c3aed';
                 else if (r.profile === 'bus') color = '#ec4899'; // pink for bus
                 else if (r.profile === 'walking') color = '#a78bfa';
-                // Highlight logic - match by route key
                 let highlight = false;
                 const sel = data.selectedProfile != null ? String(data.selectedProfile) : null;
                 const rk = String(routeKey);
-                // Highlight only when there's no selection or the selectedProfile matches this route's key
                 if (!sel) {
                   highlight = true;
                 } else if (sel === rk) {
@@ -170,7 +161,6 @@ function buildMapHtml(token, initialPayload) {
             });
           }
 
-          // Fit bounds to all route coords and both markers
           const boundsPts = [];
           if (data.from) boundsPts.push([data.from[0], data.from[1]]);
           if (data.to) boundsPts.push([data.to[0], data.to[1]]);
@@ -182,7 +172,6 @@ function buildMapHtml(token, initialPayload) {
         } catch (e) { console.warn('renderRoutes error', e); }
       }
 
-      // listen for messages from React Native
       document.addEventListener('message', function(e) { try { const d = JSON.parse(e.data); if (d.type === 'routes') renderRoutes(d); } catch (err) {} });
       window.addEventListener('message', function(e) { try { const d = typeof e.data === 'string' ? JSON.parse(e.data) : e.data; if (d.type === 'routes') renderRoutes(d); } catch (err) {} });
     </script>
@@ -205,7 +194,6 @@ export default function RouteScreen() {
   const [routes, setRoutes] = useState([]);
   const [loadingRoutes, setLoadingRoutes] = useState(false);
   const [selectedProfile, setSelectedProfile] = useState(null);
-    // ...existing code...
   const [mapboxToken, setMapboxToken] = useState(null);
   const webviewRef = useRef(null);
   const [webviewReady, setWebviewReady] = useState(false);
@@ -213,13 +201,13 @@ export default function RouteScreen() {
   const [mapImage, setMapImage] = useState(null);
 
   useEffect(() => { (async () => { try { const ud = await AsyncStorage.getItem('@user_data'); if (ud) { const parsed = JSON.parse(ud); setUserName(parsed.name || parsed.username || ''); } } catch (_e) {} })(); }, []);
-  // load user's safety/cleanliness preference if available
+
   useEffect(() => { (async () => {
     try {
       const ud = await AsyncStorage.getItem('@user_data');
       if (!ud) return;
       const parsed = JSON.parse(ud);
-      // preferences may be nested under parsed.preferences.cleanliness or a top-level cleanliness key
+
       const pref = parsed?.preferences?.cleanliness ?? parsed?.cleanliness ?? null;
       if (pref != null) setUserSafetyPref(Number(pref));
     } catch (_e) { }
@@ -238,7 +226,7 @@ export default function RouteScreen() {
     } else {
       setFromSuggestions([]);
     }
-// ...existing code...
+
     return () => clearTimeout(t);
   }, [fromText, suppressFromUntil]);
 
@@ -271,17 +259,15 @@ export default function RouteScreen() {
       try {
         const from = `${fromCoords[0]},${fromCoords[1]}`;
         const to = `${toCoords[0]},${toCoords[1]}`;
-        // Get current date/time for routing
+
         const now = new Date();
         const date = now.toISOString().slice(0, 10);
         const time = now.toTimeString().slice(0, 8);
-        // Fetch driving/walking routes
+
         const res = await getDirectionsApi(from, to, ['driving','walking']);
-        // Fetch bus routes
         const busRes = await getBusDirectionsApi(from, to, date, time);
         let allRoutes = [];
         if (res && Array.isArray(res.routes)) {
-          // Limit driving routes to at most 3
           const driving = res.routes.filter(r => r.profile === 'driving');
           const other = res.routes.filter(r => r.profile !== 'driving');
           const drivingLimited = driving.slice(0, 3).map((r, idx) => {
@@ -291,11 +277,9 @@ export default function RouteScreen() {
           allRoutes = allRoutes.concat(drivingLimited).concat(other);
         }
         if (busRes && Array.isArray(busRes.routes)) {
-          // Only keep up to three bus routes, mark with unique keys
           const busLimited = busRes.routes.slice(0, 3).map((r, idx) => {
             r.profile = 'bus';
             r._busKey = `bus${idx}`;
-            // Defensive: try to populate geometry from legs if missing
             if (!r.geometry && r.legs && r.legs.length > 0) {
               r.geometry = r.legs[0].legGeometry?.points || '';
             }
@@ -304,7 +288,6 @@ export default function RouteScreen() {
           allRoutes = allRoutes.concat(busLimited);
         }
         if (allRoutes.length > 0) {
-          // Ensure each route has a stable `key` used by the map and list
           allRoutes = allRoutes.map((r, i) => {
             if (!r.key) r.key = r._busKey || r._driveKey || (`route${i}`);
             return r;
@@ -330,29 +313,22 @@ export default function RouteScreen() {
     fetchRoutes();
   }, [fromCoords, toCoords, webviewReady]);
 
-  // Ensure we have safety scores for routes that came back without one.
-  // For any driving route missing `safetyScore`, request directions again with `matchMode=thorough`
-  // and copy the safety fields onto the existing route object. This helps ensure routes
-  // such as De Neve Drive → The Grove have non-null safety values.
   useEffect(() => {
     if (!fromCoords || !toCoords || !routes || routes.length === 0) return;
 
     const missing = routes.filter(r => (r.profile === 'driving' || r.profile === 'walking') && r.safetyScore == null && !r._safetyFetchInProgress && !r._safetyFetchTried);
     if (missing.length === 0) return;
 
-    // Mark missing routes as in-progress and tried to avoid duplicate fetches
     setRoutes(prev => prev.map(p => ((p.profile === 'driving' || p.profile === 'walking') && p.safetyScore == null) ? { ...p, _safetyFetchInProgress: true, _safetyFetchTried: true } : p));
 
     (async () => {
       try {
-        // Request thorough driving directions for this from/to specifically
         const from = `${fromCoords[0]},${fromCoords[1]}`;
         const to = `${toCoords[0]},${toCoords[1]}`;
         const res = await getDirectionsApi(from, to, ['driving'], null, '&matchMode=thorough');
         if (res && Array.isArray(res.routes) && res.routes.length > 0) {
-          // Map returned routes by profile and choose best candidate for each missing route
+
           for (const missingRoute of missing) {
-            // Find the candidate closest in distance to the original route
             const candidates = res.routes.filter(x => x.profile === missingRoute.profile);
             if (candidates.length === 0) continue;
             let best = candidates[0];
@@ -361,7 +337,7 @@ export default function RouteScreen() {
               const d = Math.abs((c.distance || 0) - (missingRoute.distance || 0));
               if (d < bestDiff) { best = c; bestDiff = d; }
             }
-            // Copy safety-related fields onto the route in state
+
             setRoutes(prev => prev.map(p => {
               if (p.key === missingRoute.key) {
                 return {
@@ -382,7 +358,6 @@ export default function RouteScreen() {
       } catch (e) {
         console.warn('failed to fetch thorough safety for missing routes', e);
       } finally {
-        // Clear in-progress flag for any remaining marked routes
         setRoutes(prev => prev.map(p => (p._safetyFetchInProgress ? { ...p, _safetyFetchInProgress: false } : p)));
       }
     })();
@@ -428,7 +403,7 @@ export default function RouteScreen() {
       </View>
 
       <View style={styles.mapContainer}>
-        {mapboxToken && fromCoords && toCoords ? (
+        {fromCoords && toCoords ? (
           Platform.OS === 'web' ? (
             (() => {
               const payload = JSON.stringify({ type: 'routes', from: fromCoords, to: toCoords, routes: routes || [], selectedProfile });
@@ -449,7 +424,6 @@ export default function RouteScreen() {
                       setWebviewReady(true);
                       return;
                     }
-                    // Forward any console/error messages from the WebView to React Native console
                     if (m.type === 'console' && Array.isArray(m.args)) {
                       console.log('[WebView]', ...(m.args));
                     } else if (m.type === 'error') {
@@ -458,7 +432,6 @@ export default function RouteScreen() {
                       console.log('[WebView message]', m);
                     }
                   } catch (_err) {
-                    // Some messages are plain strings
                     try { console.log('[WebView raw]', event.nativeEvent.data); } catch (_e) {}
                   }
                 }}
@@ -492,11 +465,17 @@ export default function RouteScreen() {
             if (item.profile === 'bus') {
               label = `BUS ${item._busKey ? item._busKey.replace('bus','') : ''}`;
             }
-            // normalize user safety preference (expected 0..20 slider) to 0..1 multiplier
             const prefMultiplier = Math.max(0, Math.min(Number(userSafetyPref || 0), 20)) / 20;
             const yourScore = (item.safetyScore != null) ? (Number(item.safetyScore) * prefMultiplier) : null;
-            // Prepare a safety display value that is never null: prefer safetyScore, otherwise show
-            // fetching state or derive a heuristic from avgStreetScore when available.
+            const hasFootTrafficMiles = (item.footTrafficMatchedDistance != null && Number(item.footTrafficMatchedDistance) > 0) || (item.pedestrianTotal != null && Number(item.pedestrianTotal) > 0);
+            let footTrafficScoreDisplay = 'NA';
+            if (hasFootTrafficMiles) {
+              let sc = null;
+              if (item.footTrafficScore != null) sc = Number(item.footTrafficScore);
+              else if (item.pedestrianPerQuarterMile != null) sc = Math.max(0, Math.min(Number(item.pedestrianPerQuarterMile) / 20, 1));
+              if (sc != null && !Number.isNaN(sc)) footTrafficScoreDisplay = sc.toFixed(3);
+              else footTrafficScoreDisplay = 'NA';
+            }
             let safetyDisplay = '—';
             if (item.safetyScore != null) {
               try { safetyDisplay = Number(item.safetyScore).toFixed(3); } catch (_e) { safetyDisplay = String(item.safetyScore); }
@@ -504,12 +483,10 @@ export default function RouteScreen() {
               safetyDisplay = 'Fetching...';
             } else if (item.avgStreetScore != null) {
               const avg = Number(item.avgStreetScore);
-              // If avg looks like a CSGrade (1..3), map to 0..1 where 1 is best.
               if (!Number.isNaN(avg) && avg <= 3) {
-                const norm = (3 - avg) / 2; // 1 -> 1.0, 2 -> 0.5, 3 -> 0.0
+                const norm = (3 - avg) / 2; 
                 safetyDisplay = norm.toFixed(3) + ' (from avg)';
               } else if (!Number.isNaN(avg)) {
-                // Otherwise assume 0..100 scale and normalize
                 const norm = Math.max(0, Math.min(avg, 100)) / 100;
                 safetyDisplay = norm.toFixed(3) + ' (from avg)';
               }
@@ -518,10 +495,8 @@ export default function RouteScreen() {
               <View style={[styles.routeCard, isSelected && styles.routeCardSelected]}>
                 <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
                     <TouchableOpacity style={{ flex: 1 }} onPress={() => {
-                    try {
-                      // Toggle selection: deselect if already selected
+                    try 
                       const newSelected = isSelected ? null : key;
-                      // Normalize selection to the route's canonical key
                       const payload = { type: 'routes', from: fromCoords, to: toCoords, routes: routes, selectedProfile: newSelected };
                       if (webviewReady && webviewRef.current) webviewRef.current.postMessage(JSON.stringify(payload)); else setPendingPayload(payload);
                       setSelectedProfile(newSelected);
@@ -540,6 +515,10 @@ export default function RouteScreen() {
                         {item.avgStreetScore != null && (
                           <Text style={{ color: colors.textMuted, marginTop: 4 }}>Avg street score: {Number(item.avgStreetScore).toFixed(2)} (1=best, 3=worst)</Text>
                         )}
+                        <Text style={{ color: colors.textMuted, marginTop: 4 }}>
+                          Foot traffic score: {footTrafficScoreDisplay}
+                          {hasFootTrafficMiles ? (` • Pedestrians: ${item.pedestrianTotal != null ? item.pedestrianTotal : '—'} • /qmi: ${item.pedestrianPerQuarterMile != null ? Number(item.pedestrianPerQuarterMile).toFixed(3) : '—'}`) : ''}
+                        </Text>
                         <Text style={{ color: colors.textMuted, marginTop: 4 }}>Safety: {safetyDisplay} {item.safetyDescription ? '• ' + item.safetyDescription : ''}</Text>
                         {yourScore != null && (
                           <Text style={{ color: colors.textMuted, marginTop: 4 }}>Your Score: {Number(yourScore).toFixed(3)}</Text>
