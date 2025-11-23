@@ -8,15 +8,20 @@ import { geocodeApi, getDirectionsApi, getMapboxTokenApi, getBusDirectionsApi } 
 function buildMapHtml(token, initialPayload) {
   const safeToken = token || '';
   const init = initialPayload || 'null';
-  if (safeToken.indexOf('sk.') === 0) {
+  // If there's no valid public token (or a secret token was provided), render a helpful message
+  if (!safeToken || safeToken.indexOf('pk.') !== 0) {
+    const masked = safeToken ? (safeToken.slice(0,4) + '...') : null;
+    const secretNote = safeToken && safeToken.indexOf('sk.') === 0 ? '<p><strong>Note:</strong> the token provided appears to be a <code>secret</code> token (starts with <code>sk.</code>), which cannot be used by Mapbox GL.</p>' : '';
     return `<!doctype html>
     <html>
       <head><meta name="viewport" content="width=device-width, initial-scale=1" /><style>body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;padding:20px;color:#333} .box{background:#fff;border:1px solid #eee;padding:16px;border-radius:8px;} code{display:inline-block;padding:2px 6px;background:#f6f8fa;border-radius:4px;}</style></head>
       <body>
         <div class="box">
-          <h2>Mapbox token error</h2>
-          <p>The Mapbox token provided appears to be a <strong>secret</strong> token (starts with <code>sk.</code>). Mapbox GL requires a <strong>public</strong> token that starts with <code>pk.</code>.</p>
-          <p>Please provide a public token. For development you can use a public token with limited scopes. Update your backend or frontend configuration so the Mapbox GL client receives a <code>pk.*</code> token.</p>
+          <h2>Mapbox token missing or invalid</h2>
+          <p>Mapbox GL requires a <strong>public</strong> token that starts with <code>pk.</code>. No usable public token was provided to the map.</p>
+          ${secretNote}
+          <p>Please configure a public Mapbox token in your backend (the <code>/api/mapbox-token</code> endpoint) or set it in the frontend. For development you can use a public token with limited scopes.</p>
+          ${masked ? `<p>Current token (masked): <code>${masked}</code></p>` : ''}
         </div>
       </body>
     </html>`;
@@ -181,7 +186,8 @@ function buildMapHtml(token, initialPayload) {
 
 export default function RouteScreen() {
   const [userName, setUserName] = useState('');
-  const [userSafetyPref, setUserSafetyPref] = useState(10); // cleanliness preference (0-20)
+  const [userSafetyPref, setUserSafetyPref] = useState(10); 
+  const [userFootPref, setUserFootPref] = useState(10); 
   const [fromText, setFromText] = useState('');
   const [toText, setToText] = useState('');
   const [fromCoords, setFromCoords] = useState(null);
@@ -210,6 +216,8 @@ export default function RouteScreen() {
 
       const pref = parsed?.preferences?.cleanliness ?? parsed?.cleanliness ?? null;
       if (pref != null) setUserSafetyPref(Number(pref));
+      const footPref = parsed?.preferences?.footTraffic ?? parsed?.footTraffic ?? null;
+      if (footPref != null) setUserFootPref(Number(footPref));
     } catch (_e) { }
   })(); }, []);
 
@@ -367,7 +375,6 @@ export default function RouteScreen() {
 
   useEffect(() => { if (webviewReady && pendingPayload && webviewRef.current) { try { webviewRef.current.postMessage(JSON.stringify(pendingPayload)); } catch (_e) {} setPendingPayload(null); } }, [webviewReady, pendingPayload]);
 
-  // ...existing code...
   return (
     <ScrollView style={styles.container} contentContainerStyle={{ padding: 16 }}>
       <Text style={styles.header}>Start Your Journey, {userName || ''}!</Text>
@@ -466,36 +473,52 @@ export default function RouteScreen() {
               label = `BUS ${item._busKey ? item._busKey.replace('bus','') : ''}`;
             }
             const prefMultiplier = Math.max(0, Math.min(Number(userSafetyPref || 0), 20)) / 20;
-            const yourScore = (item.safetyScore != null) ? (Number(item.safetyScore) * prefMultiplier) : null;
+            const footPrefMultiplier = Math.max(0, Math.min(Number(userFootPref || 0), 20)) / 20;
             const hasFootTrafficMiles = (item.footTrafficMatchedDistance != null && Number(item.footTrafficMatchedDistance) > 0) || (item.pedestrianTotal != null && Number(item.pedestrianTotal) > 0);
+            let footTrafficScoreVal = null;
             let footTrafficScoreDisplay = 'NA';
             if (hasFootTrafficMiles) {
               let sc = null;
               if (item.footTrafficScore != null) sc = Number(item.footTrafficScore);
               else if (item.pedestrianPerQuarterMile != null) sc = Math.max(0, Math.min(Number(item.pedestrianPerQuarterMile) / 20, 1));
-              if (sc != null && !Number.isNaN(sc)) footTrafficScoreDisplay = sc.toFixed(3);
+              if (sc != null && !Number.isNaN(sc)) { footTrafficScoreVal = sc; footTrafficScoreDisplay = sc.toFixed(3); }
               else footTrafficScoreDisplay = 'NA';
             }
-            let safetyDisplay = '—';
+
+            let baseSafetyVal = null;
             if (item.safetyScore != null) {
-              try { safetyDisplay = Number(item.safetyScore).toFixed(3); } catch (_e) { safetyDisplay = String(item.safetyScore); }
+              const v = Number(item.safetyScore);
+              if (!Number.isNaN(v)) baseSafetyVal = v;
             } else if (item._safetyFetchInProgress) {
-              safetyDisplay = 'Fetching...';
+
             } else if (item.avgStreetScore != null) {
               const avg = Number(item.avgStreetScore);
               if (!Number.isNaN(avg) && avg <= 3) {
-                const norm = (3 - avg) / 2; 
-                safetyDisplay = norm.toFixed(3) + ' (from avg)';
+                baseSafetyVal = (3 - avg) / 2;
               } else if (!Number.isNaN(avg)) {
-                const norm = Math.max(0, Math.min(avg, 100)) / 100;
-                safetyDisplay = norm.toFixed(3) + ' (from avg)';
+                baseSafetyVal = Math.max(0, Math.min(avg, 100)) / 100;
               }
             }
+
+            let combinedSafetyVal = null;
+            if (baseSafetyVal != null) {
+              combinedSafetyVal = baseSafetyVal;
+              if (footTrafficScoreVal != null) combinedSafetyVal += footTrafficScoreVal * footPrefMultiplier;
+            }
+
+            let safetyDisplay = '—';
+            if (combinedSafetyVal != null) {
+              safetyDisplay = Number(combinedSafetyVal).toFixed(3);
+            } else if (item._safetyFetchInProgress) {
+              safetyDisplay = 'Fetching...';
+            }
+
+            const yourScore = (combinedSafetyVal != null) ? (Number(combinedSafetyVal) * prefMultiplier) : null;
             return (
               <View style={[styles.routeCard, isSelected && styles.routeCardSelected]}>
                 <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
                     <TouchableOpacity style={{ flex: 1 }} onPress={() => {
-                    try 
+                    try {
                       const newSelected = isSelected ? null : key;
                       const payload = { type: 'routes', from: fromCoords, to: toCoords, routes: routes, selectedProfile: newSelected };
                       if (webviewReady && webviewRef.current) webviewRef.current.postMessage(JSON.stringify(payload)); else setPendingPayload(payload);
