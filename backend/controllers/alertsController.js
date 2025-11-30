@@ -112,6 +112,7 @@ exports.busDirections = async (req, res) => {
 };
 const CommunityAlert = require('../models/CommunityAlert');
 const StreetCleanliness = require('../models/StreetCleanliness');
+const mongoose = require('mongoose');
 
 function distanceMeters(lat1, lon1, lat2, lon2) {
   const toRad = (v) => (v * Math.PI) / 180;
@@ -830,6 +831,114 @@ exports.directions = async (req, res) => {
 
             route.safetyMatchedCount = matchCounts;
             route.safetyMatchedDistance = Math.round(matchedDistance * 100) / 100; // meters
+            // Foot traffic: sum Ped_Total from the `foottraffic` collection for features intersecting this route
+            try {
+              let pedSum = 0;
+              if (mongoose && mongoose.connection && mongoose.connection.readyState === 1) {
+                try {
+                  const routeLine = { type: 'LineString', coordinates: coords };
+                  const coll = mongoose.connection.collection('foottraffic');
+                  if (coll) {
+                    const matches = await coll.find({ geometry: { $geoIntersects: { $geometry: routeLine } } }).project({ Ped_Total: 1, PedTotal: 1, ped_total: 1, pedTotal: 1 }).toArray();
+                    if (Array.isArray(matches) && matches.length > 0) {
+                      for (const m of matches) {
+                        let v = null;
+                        if (m.Ped_Total != null) v = m.Ped_Total;
+                        else if (m.PedTotal != null) v = m.PedTotal;
+                        else if (m.ped_total != null) v = m.ped_total;
+                        else if (m.pedTotal != null) v = m.pedTotal;
+                        if (v == null) continue;
+                        if (typeof v === 'string') v = v.replace(/,/g, '');
+                        const n = Number(v);
+                        if (!isNaN(n)) pedSum += n;
+                      }
+                    }
+                  }
+                  // If geometry-based lookup returned nothing, try a street-name fallback using route steps
+                  if (pedSum === 0) {
+                    try {
+                      // collect street names from legs/steps
+                      const nameSet = new Set();
+                      if (route && Array.isArray(route.legs)) {
+                        for (const leg of route.legs) {
+                          if (Array.isArray(leg.steps)) {
+                            for (const step of leg.steps) {
+                              if (step && step.name && typeof step.name === 'string' && step.name.trim().length > 0) {
+                                nameSet.add(step.name.trim());
+                              }
+                              if (step && step.ref && typeof step.ref === 'string' && step.ref.trim().length > 0) {
+                                nameSet.add(step.ref.trim());
+                              }
+                            }
+                          }
+                          if (leg && leg.summary && typeof leg.summary === 'string' && leg.summary.trim().length > 0) {
+                            nameSet.add(leg.summary.trim());
+                          }
+                        }
+                      }
+                      // helper to escape regex
+                      const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+                      const nameArr = Array.from(nameSet).slice(0, 200);
+                      for (const nm of nameArr) {
+                        try {
+                          const regex = new RegExp('\\b' + escapeRegex(nm) + '\\b', 'i');
+                          const orQs = [
+                            { 'Street Name': regex },
+                            { 'street_name': regex },
+                            { 'StreetName': regex },
+                            { 'street': regex },
+                            { 'Full Location Names 2023': regex },
+                            { 'FullLocationNames2023': regex }
+                          ];
+                          const nameMatches = await coll.find({ $or: orQs }).project({ Ped_Total: 1, PedTotal: 1, ped_total: 1, pedTotal: 1 }).toArray();
+                          if (Array.isArray(nameMatches) && nameMatches.length > 0) {
+                            for (const m of nameMatches) {
+                              let v = null;
+                              if (m.Ped_Total != null) v = m.Ped_Total;
+                              else if (m.PedTotal != null) v = m.PedTotal;
+                              else if (m.ped_total != null) v = m.ped_total;
+                              else if (m.pedTotal != null) v = m.pedTotal;
+                              if (v == null) continue;
+                              if (typeof v === 'string') v = v.replace(/,/g, '');
+                              const n = Number(v);
+                              if (!isNaN(n)) pedSum += n;
+                            }
+                          }
+                        } catch (e) {
+                          // ignore per-name failures
+                        }
+                      }
+                    } catch (e) {
+                      // ignore fallback failures
+                    }
+                  }
+                } catch (e) {
+                  // ignore foottraffic lookup failures
+                }
+              }
+              route.pedestrianTotal = Math.round(pedSum);
+              // Normalize into 0..1 using rule: 0 -> 0, >=20 people per quarter-mile -> 1
+              try {
+                const ped = route.pedestrianTotal != null ? Number(route.pedestrianTotal) : 0;
+                const miles = totalDistance > 0 ? (totalDistance / 1609.344) : 0;
+                if (miles > 0) {
+                  const pedPerQuarter = (ped * 0.25) / miles;
+                  const normalized = Math.max(0, Math.min(1, pedPerQuarter / 20));
+                  route.footTrafficScore = Math.round(normalized * 1000) / 1000;
+                  route.pedestrianPerQuarterMile = Math.round(pedPerQuarter * 1000) / 1000;
+                } else {
+                  route.footTrafficScore = null;
+                  route.pedestrianPerQuarterMile = null;
+                }
+              } catch (e) {
+                route.footTrafficScore = null;
+                route.pedestrianPerQuarterMile = null;
+              }
+            } catch (e) {
+              route.pedestrianTotal = null;
+              route.footTrafficScore = null;
+              route.pedestrianPerQuarterMile = null;
+            }
             if (req.query && req.query.debug === 'true') route.safetyDebug = debugMsgs;
           }
         } catch (e) {

@@ -8,16 +8,20 @@ import { geocodeApi, getDirectionsApi, getMapboxTokenApi, getBusDirectionsApi } 
 function buildMapHtml(token, initialPayload) {
   const safeToken = token || '';
   const init = initialPayload || 'null';
-  // If a secret token is provided, return a helpful HTML page instead of trying to init Mapbox GL.
-  if (safeToken.indexOf('sk.') === 0) {
+  // If there's no valid public token (or a secret token was provided), render a helpful message
+  if (!safeToken || safeToken.indexOf('pk.') !== 0) {
+    const masked = safeToken ? (safeToken.slice(0,4) + '...') : null;
+    const secretNote = safeToken && safeToken.indexOf('sk.') === 0 ? '<p><strong>Note:</strong> the token provided appears to be a <code>secret</code> token (starts with <code>sk.</code>), which cannot be used by Mapbox GL.</p>' : '';
     return `<!doctype html>
     <html>
       <head><meta name="viewport" content="width=device-width, initial-scale=1" /><style>body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;padding:20px;color:#333} .box{background:#fff;border:1px solid #eee;padding:16px;border-radius:8px;} code{display:inline-block;padding:2px 6px;background:#f6f8fa;border-radius:4px;}</style></head>
       <body>
         <div class="box">
-          <h2>Mapbox token error</h2>
-          <p>The Mapbox token provided appears to be a <strong>secret</strong> token (starts with <code>sk.</code>). Mapbox GL requires a <strong>public</strong> token that starts with <code>pk.</code>.</p>
-          <p>Please provide a public token. For development you can use a public token with limited scopes. Update your backend or frontend configuration so the Mapbox GL client receives a <code>pk.*</code> token.</p>
+          <h2>Mapbox token missing or invalid</h2>
+          <p>Mapbox GL requires a <strong>public</strong> token that starts with <code>pk.</code>. No usable public token was provided to the map.</p>
+          ${secretNote}
+          <p>Please configure a public Mapbox token in your backend (the <code>/api/mapbox-token</code> endpoint) or set it in the frontend. For development you can use a public token with limited scopes.</p>
+          ${masked ? `<p>Current token (masked): <code>${masked}</code></p>` : ''}
         </div>
       </body>
     </html>`;
@@ -83,8 +87,6 @@ function buildMapHtml(token, initialPayload) {
       function renderRoutes(data) {
         try {
           clearAllRoutes();
-          // Pin colors by route type
-          // Use lighter purple for all pins
           const pinColor = '#a78bfa';
           if (data.from) {
             if (window.fromMarker) window.fromMarker.remove();
@@ -106,7 +108,6 @@ function buildMapHtml(token, initialPayload) {
             data.routes.forEach((r, idx) => {
               try {
                 let coords = [];
-                // If geometry is an encoded polyline string
                 if (typeof r.geometry === 'string' && r.geometry.length > 0) {
                   try {
                     coords = polyline.decode(r.geometry).map(c => [c[1], c[0]]);
@@ -114,7 +115,6 @@ function buildMapHtml(token, initialPayload) {
                 } else if (r.geometry && r.geometry.type === 'LineString' && Array.isArray(r.geometry.coordinates)) {
                   coords = r.geometry.coordinates;
                 } else if (r.legs && r.legs.length > 0) {
-                  // Try to assemble from legGeometry points
                   for (const leg of r.legs) {
                     const pts = leg.legGeometry && leg.legGeometry.points;
                     if (typeof pts === 'string' && pts.length > 0) {
@@ -126,7 +126,6 @@ function buildMapHtml(token, initialPayload) {
                   }
                 }
                 if (!coords || coords.length === 0) {
-                  // Nothing to draw for this route
                   return;
                 }
                 allCoords.push(...coords);
@@ -140,16 +139,13 @@ function buildMapHtml(token, initialPayload) {
                   try { map.removeSource(srcId); } catch (e) {}
                 }
                 map.addSource(srcId, { type: 'geojson', data: { type: 'Feature', geometry: { type: 'LineString', coordinates: coords } } });
-                // Color by route type
                 let color = '#7c3aed'; // default purple
                 if (r.profile === 'driving') color = '#7c3aed';
                 else if (r.profile === 'bus') color = '#ec4899'; // pink for bus
                 else if (r.profile === 'walking') color = '#a78bfa';
-                // Highlight logic - match by route key
                 let highlight = false;
                 const sel = data.selectedProfile != null ? String(data.selectedProfile) : null;
                 const rk = String(routeKey);
-                // Highlight only when there's no selection or the selectedProfile matches this route's key
                 if (!sel) {
                   highlight = true;
                 } else if (sel === rk) {
@@ -170,7 +166,6 @@ function buildMapHtml(token, initialPayload) {
             });
           }
 
-          // Fit bounds to all route coords and both markers
           const boundsPts = [];
           if (data.from) boundsPts.push([data.from[0], data.from[1]]);
           if (data.to) boundsPts.push([data.to[0], data.to[1]]);
@@ -182,7 +177,6 @@ function buildMapHtml(token, initialPayload) {
         } catch (e) { console.warn('renderRoutes error', e); }
       }
 
-      // listen for messages from React Native
       document.addEventListener('message', function(e) { try { const d = JSON.parse(e.data); if (d.type === 'routes') renderRoutes(d); } catch (err) {} });
       window.addEventListener('message', function(e) { try { const d = typeof e.data === 'string' ? JSON.parse(e.data) : e.data; if (d.type === 'routes') renderRoutes(d); } catch (err) {} });
     </script>
@@ -192,7 +186,9 @@ function buildMapHtml(token, initialPayload) {
 
 export default function RouteScreen() {
   const [userName, setUserName] = useState('');
-  const [userSafetyPref, setUserSafetyPref] = useState(10); // cleanliness preference (0-20)
+  const [userSafetyPref, setUserSafetyPref] = useState(10); 
+  const [userFootPref, setUserFootPref] = useState(10); 
+  const [userCostPref, setUserCostPref] = useState(10);
   const [fromText, setFromText] = useState('');
   const [toText, setToText] = useState('');
   const [fromCoords, setFromCoords] = useState(null);
@@ -205,7 +201,6 @@ export default function RouteScreen() {
   const [routes, setRoutes] = useState([]);
   const [loadingRoutes, setLoadingRoutes] = useState(false);
   const [selectedProfile, setSelectedProfile] = useState(null);
-    // ...existing code...
   const [mapboxToken, setMapboxToken] = useState(null);
   const webviewRef = useRef(null);
   const [webviewReady, setWebviewReady] = useState(false);
@@ -213,15 +208,19 @@ export default function RouteScreen() {
   const [mapImage, setMapImage] = useState(null);
 
   useEffect(() => { (async () => { try { const ud = await AsyncStorage.getItem('@user_data'); if (ud) { const parsed = JSON.parse(ud); setUserName(parsed.name || parsed.username || ''); } } catch (_e) {} })(); }, []);
-  // load user's safety/cleanliness preference if available
+
   useEffect(() => { (async () => {
     try {
       const ud = await AsyncStorage.getItem('@user_data');
       if (!ud) return;
       const parsed = JSON.parse(ud);
-      // preferences may be nested under parsed.preferences.cleanliness or a top-level cleanliness key
+
       const pref = parsed?.preferences?.cleanliness ?? parsed?.cleanliness ?? null;
       if (pref != null) setUserSafetyPref(Number(pref));
+      const footPref = parsed?.preferences?.footTraffic ?? parsed?.footTraffic ?? null;
+      if (footPref != null) setUserFootPref(Number(footPref));
+      const costPref = parsed?.preferences?.cost ?? parsed?.cost ?? null;
+      if (costPref != null) setUserCostPref(Number(costPref));
     } catch (_e) { }
   })(); }, []);
 
@@ -238,7 +237,7 @@ export default function RouteScreen() {
     } else {
       setFromSuggestions([]);
     }
-// ...existing code...
+
     return () => clearTimeout(t);
   }, [fromText, suppressFromUntil]);
 
@@ -271,47 +270,47 @@ export default function RouteScreen() {
       try {
         const from = `${fromCoords[0]},${fromCoords[1]}`;
         const to = `${toCoords[0]},${toCoords[1]}`;
-        // Get current date/time for routing
+
         const now = new Date();
         const date = now.toISOString().slice(0, 10);
         const time = now.toTimeString().slice(0, 8);
-        // Fetch driving/walking routes
+
         const res = await getDirectionsApi(from, to, ['driving','walking']);
-        // Fetch bus routes
         const busRes = await getBusDirectionsApi(from, to, date, time);
-        let allRoutes = [];
-        if (res && Array.isArray(res.routes)) {
-          // Limit driving routes to at most 3
-          const driving = res.routes.filter(r => r.profile === 'driving');
-          const other = res.routes.filter(r => r.profile !== 'driving');
-          const drivingLimited = driving.slice(0, 3).map((r, idx) => {
-            r._driveKey = `drive${idx}`;
-            return r;
-          });
-          allRoutes = allRoutes.concat(drivingLimited).concat(other);
-        }
+        // Build grouped route cards: 1 rideshare (synthetic) if available, up to 2 driving, 1 walking, up to 2 bus
+        const raw = [];
+        if (res && Array.isArray(res.routes)) raw.push(...res.routes);
         if (busRes && Array.isArray(busRes.routes)) {
-          // Only keep up to three bus routes, mark with unique keys
-          const busLimited = busRes.routes.slice(0, 3).map((r, idx) => {
+          // normalize bus results
+          busRes.routes.slice(0, 3).forEach((r, idx) => {
             r.profile = 'bus';
             r._busKey = `bus${idx}`;
-            // Defensive: try to populate geometry from legs if missing
-            if (!r.geometry && r.legs && r.legs.length > 0) {
-              r.geometry = r.legs[0].legGeometry?.points || '';
-            }
-            return r;
+            if (!r.geometry && r.legs && r.legs.length > 0) r.geometry = r.legs[0].legGeometry?.points || '';
+            raw.push(r);
           });
-          allRoutes = allRoutes.concat(busLimited);
         }
-        if (allRoutes.length > 0) {
-          // Ensure each route has a stable `key` used by the map and list
-          allRoutes = allRoutes.map((r, i) => {
-            if (!r.key) r.key = r._busKey || r._driveKey || (`route${i}`);
-            return r;
-          });
-          setRoutes(allRoutes);
+
+        const driving = raw.filter(r => r.profile === 'driving').sort((a, b) => (a.duration || 0) - (b.duration || 0));
+        const walking = raw.filter(r => r.profile === 'walking').sort((a, b) => (a.duration || 0) - (b.duration || 0));
+        const bus = raw.filter(r => r.profile === 'bus');
+
+        const grouped = [];
+        if (driving.length > 0 && driving[0].rideshareEstimate != null) {
+          const best = driving[0];
+          // keep the driving card; create a separate rideshare card derived from the same fastest route
+          grouped.push({ ...best, profile: 'rideshare', key: 'rideshare' });
+        }
+        grouped.push(...driving.slice(0, 2));
+        if (walking.length > 0) grouped.push(walking[0]);
+        grouped.push(...bus.slice(0, 2));
+
+        if (grouped.length > 0) {
+          // ensure keys exist
+          const withKeys = grouped.map((r, i) => { if (!r.key) r.key = r._busKey || r._driveKey || (`route${i}`); return r; });
+          setRoutes(withKeys);
           if (res.mapImage) setMapImage(res.mapImage);
-          const payload = { type: 'routes', from: fromCoords, to: toCoords, routes: allRoutes };
+          // send original raw routes to WebView for rendering
+          const payload = { type: 'routes', from: fromCoords, to: toCoords, routes: raw };
           if (webviewReady && webviewRef.current) {
             try { webviewRef.current.postMessage(JSON.stringify(payload)); } catch (_e) {}
           } else {
@@ -330,29 +329,22 @@ export default function RouteScreen() {
     fetchRoutes();
   }, [fromCoords, toCoords, webviewReady]);
 
-  // Ensure we have safety scores for routes that came back without one.
-  // For any driving route missing `safetyScore`, request directions again with `matchMode=thorough`
-  // and copy the safety fields onto the existing route object. This helps ensure routes
-  // such as De Neve Drive → The Grove have non-null safety values.
   useEffect(() => {
     if (!fromCoords || !toCoords || !routes || routes.length === 0) return;
 
-    const missing = routes.filter(r => r.profile === 'driving' && r.safetyScore == null && !r._safetyFetchInProgress && !r._safetyFetchTried);
+    const missing = routes.filter(r => (r.profile === 'driving' || r.profile === 'walking') && r.safetyScore == null && !r._safetyFetchInProgress && !r._safetyFetchTried);
     if (missing.length === 0) return;
 
-    // Mark missing routes as in-progress and tried to avoid duplicate fetches
-    setRoutes(prev => prev.map(p => (p.profile === 'driving' && p.safetyScore == null) ? { ...p, _safetyFetchInProgress: true, _safetyFetchTried: true } : p));
+    setRoutes(prev => prev.map(p => ((p.profile === 'driving' || p.profile === 'walking') && p.safetyScore == null) ? { ...p, _safetyFetchInProgress: true, _safetyFetchTried: true } : p));
 
     (async () => {
       try {
-        // Request thorough driving directions for this from/to specifically
         const from = `${fromCoords[0]},${fromCoords[1]}`;
         const to = `${toCoords[0]},${toCoords[1]}`;
         const res = await getDirectionsApi(from, to, ['driving'], null, '&matchMode=thorough');
         if (res && Array.isArray(res.routes) && res.routes.length > 0) {
-          // Map returned routes by profile and choose best candidate for each missing route
+
           for (const missingRoute of missing) {
-            // Find the candidate closest in distance to the original route
             const candidates = res.routes.filter(x => x.profile === missingRoute.profile);
             if (candidates.length === 0) continue;
             let best = candidates[0];
@@ -361,7 +353,7 @@ export default function RouteScreen() {
               const d = Math.abs((c.distance || 0) - (missingRoute.distance || 0));
               if (d < bestDiff) { best = c; bestDiff = d; }
             }
-            // Copy safety-related fields onto the route in state
+
             setRoutes(prev => prev.map(p => {
               if (p.key === missingRoute.key) {
                 return {
@@ -382,7 +374,6 @@ export default function RouteScreen() {
       } catch (e) {
         console.warn('failed to fetch thorough safety for missing routes', e);
       } finally {
-        // Clear in-progress flag for any remaining marked routes
         setRoutes(prev => prev.map(p => (p._safetyFetchInProgress ? { ...p, _safetyFetchInProgress: false } : p)));
       }
     })();
@@ -392,7 +383,6 @@ export default function RouteScreen() {
 
   useEffect(() => { if (webviewReady && pendingPayload && webviewRef.current) { try { webviewRef.current.postMessage(JSON.stringify(pendingPayload)); } catch (_e) {} setPendingPayload(null); } }, [webviewReady, pendingPayload]);
 
-  // ...existing code...
   return (
     <ScrollView style={styles.container} contentContainerStyle={{ padding: 16 }}>
       <Text style={styles.header}>Start Your Journey, {userName || ''}!</Text>
@@ -428,7 +418,7 @@ export default function RouteScreen() {
       </View>
 
       <View style={styles.mapContainer}>
-        {mapboxToken && fromCoords && toCoords ? (
+        {fromCoords && toCoords ? (
           Platform.OS === 'web' ? (
             (() => {
               const payload = JSON.stringify({ type: 'routes', from: fromCoords, to: toCoords, routes: routes || [], selectedProfile });
@@ -449,7 +439,6 @@ export default function RouteScreen() {
                       setWebviewReady(true);
                       return;
                     }
-                    // Forward any console/error messages from the WebView to React Native console
                     if (m.type === 'console' && Array.isArray(m.args)) {
                       console.log('[WebView]', ...(m.args));
                     } else if (m.type === 'error') {
@@ -458,7 +447,6 @@ export default function RouteScreen() {
                       console.log('[WebView message]', m);
                     }
                   } catch (_err) {
-                    // Some messages are plain strings
                     try { console.log('[WebView raw]', event.nativeEvent.data); } catch (_e) {}
                   }
                 }}
@@ -492,26 +480,86 @@ export default function RouteScreen() {
             if (item.profile === 'bus') {
               label = `BUS ${item._busKey ? item._busKey.replace('bus','') : ''}`;
             }
-            // normalize user safety preference (expected 0..20 slider) to 0..1 multiplier
             const prefMultiplier = Math.max(0, Math.min(Number(userSafetyPref || 0), 20)) / 20;
-            const yourScore = (item.safetyScore != null) ? (Number(item.safetyScore) * prefMultiplier) : null;
-            // Prepare a safety display value that is never null: prefer safetyScore, otherwise show
-            // fetching state or derive a heuristic from avgStreetScore when available.
-            let safetyDisplay = '—';
+            const footPrefMultiplier = Math.max(0, Math.min(Number(userFootPref || 0), 20)) / 20;
+            const hasFootTrafficMiles = (item.footTrafficMatchedDistance != null && Number(item.footTrafficMatchedDistance) > 0) || (item.pedestrianTotal != null && Number(item.pedestrianTotal) > 0);
+            let footTrafficScoreVal = null;
+            let footTrafficScoreDisplay = 'NA';
+            if (hasFootTrafficMiles) {
+              let sc = null;
+              if (item.footTrafficScore != null) sc = Number(item.footTrafficScore);
+              else if (item.pedestrianPerQuarterMile != null) sc = Math.max(0, Math.min(Number(item.pedestrianPerQuarterMile) / 20, 1));
+              if (sc != null && !Number.isNaN(sc)) { footTrafficScoreVal = sc; footTrafficScoreDisplay = sc.toFixed(3); }
+              else footTrafficScoreDisplay = 'NA';
+            }
+
+            let baseSafetyVal = null;
             if (item.safetyScore != null) {
-              try { safetyDisplay = Number(item.safetyScore).toFixed(3); } catch (_e) { safetyDisplay = String(item.safetyScore); }
+              const v = Number(item.safetyScore);
+              if (!Number.isNaN(v)) baseSafetyVal = v;
             } else if (item._safetyFetchInProgress) {
-              safetyDisplay = 'Fetching...';
+
             } else if (item.avgStreetScore != null) {
               const avg = Number(item.avgStreetScore);
-              // If avg looks like a CSGrade (1..3), map to 0..1 where 1 is best.
               if (!Number.isNaN(avg) && avg <= 3) {
-                const norm = (3 - avg) / 2; // 1 -> 1.0, 2 -> 0.5, 3 -> 0.0
-                safetyDisplay = norm.toFixed(3) + ' (from avg)';
+                baseSafetyVal = (3 - avg) / 2;
               } else if (!Number.isNaN(avg)) {
-                // Otherwise assume 0..100 scale and normalize
-                const norm = Math.max(0, Math.min(avg, 100)) / 100;
-                safetyDisplay = norm.toFixed(3) + ' (from avg)';
+                baseSafetyVal = Math.max(0, Math.min(avg, 100)) / 100;
+              }
+            }
+
+            let combinedSafetyVal = null;
+            if (baseSafetyVal != null) {
+              combinedSafetyVal = baseSafetyVal;
+              if (footTrafficScoreVal != null) combinedSafetyVal += footTrafficScoreVal * footPrefMultiplier;
+            }
+
+            let safetyDisplay = '—';
+            if (combinedSafetyVal != null) {
+              safetyDisplay = Number(combinedSafetyVal).toFixed(3);
+            } else if (item._safetyFetchInProgress) {
+              safetyDisplay = 'Fetching...';
+            }
+
+            const yourScore = (combinedSafetyVal != null) ? (Number(combinedSafetyVal) * prefMultiplier) : null;
+            // Rideshare-specific combined score: incorporate cleanliness and foot-traffic (from the driving route)
+            // and weight with user cost preference. Display as a decimal 0..1.
+            let rideshareYourScore = null;
+            if (item.profile === 'rideshare') {
+              const costPref = Math.max(0, Math.min(Number(userCostPref || 10), 20)) / 20; // 0..1 where 1 means cost matters more
+              // Parse rideshare cost which may be a string like "$12.34"
+              let cost = null;
+              if (item.rideshareEstimate != null) {
+                if (typeof item.rideshareEstimate === 'number') cost = item.rideshareEstimate;
+                else {
+                  const m = String(item.rideshareEstimate).match(/[\d,.]+/);
+                  if (m && m[0]) cost = parseFloat(m[0].replace(/,/g, ''));
+                }
+              }
+              const costNorm = cost != null && !Number.isNaN(cost) ? Math.max(0, Math.min(cost, 50)) / 50 : 1;
+              const costScore = 1 - costNorm; // 0..1 where higher is better
+
+              // cleanliness (safety) and foot traffic scores (0..1) — use values already computed for this item
+              const cleanlinessScore = baseSafetyVal != null ? baseSafetyVal : null;
+              const footScore = footTrafficScoreVal != null ? footTrafficScoreVal : null;
+              // Weigh cleanliness vs footTraffic using user prefs
+              const safetyW = Math.max(0, Math.min(Number(userSafetyPref || 10), 20)) / 20;
+              const footW = Math.max(0, Math.min(Number(userFootPref || 10), 20)) / 20;
+
+              let safetyCombined = null;
+              if (cleanlinessScore != null || footScore != null) {
+                if (cleanlinessScore == null) safetyCombined = footScore;
+                else if (footScore == null) safetyCombined = cleanlinessScore;
+                else {
+                  const denom = (safetyW + footW) || 1;
+                  safetyCombined = (cleanlinessScore * safetyW + footScore * footW) / denom;
+                }
+              }
+
+              if (safetyCombined != null) {
+                rideshareYourScore = ((1 - costPref) * safetyCombined) + (costPref * costScore);
+              } else {
+                rideshareYourScore = costScore;
               }
             }
             return (
@@ -519,9 +567,7 @@ export default function RouteScreen() {
                 <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
                     <TouchableOpacity style={{ flex: 1 }} onPress={() => {
                     try {
-                      // Toggle selection: deselect if already selected
                       const newSelected = isSelected ? null : key;
-                      // Normalize selection to the route's canonical key
                       const payload = { type: 'routes', from: fromCoords, to: toCoords, routes: routes, selectedProfile: newSelected };
                       if (webviewReady && webviewRef.current) webviewRef.current.postMessage(JSON.stringify(payload)); else setPendingPayload(payload);
                       setSelectedProfile(newSelected);
@@ -532,16 +578,31 @@ export default function RouteScreen() {
                     {item.profile === 'bus' && item.summary && (
                       <Text style={{ color: '#ec4899', fontWeight: '700', marginTop: 4 }}>{item.summary}</Text>
                     )}
-                    {item.profile === 'driving' && (
+                    {(item.profile === 'driving' || item.profile === 'walking') && (
                       <View style={{ marginTop: 6 }}>
-                        <Text style={{ color: colors.textMuted, fontWeight: '700' }}>Rideshare: {item.rideshareEstimate != null ? item.rideshareEstimate : '—'}</Text>
                         {item.avgStreetScore != null && (
                           <Text style={{ color: colors.textMuted, marginTop: 4 }}>Avg street score: {Number(item.avgStreetScore).toFixed(2)} (1=best, 3=worst)</Text>
                         )}
-                        <Text style={{ color: colors.textMuted, marginTop: 4 }}>Safety: {safetyDisplay} {item.safetyDescription ? '• ' + item.safetyDescription : ''}</Text>
+                        <Text style={{ color: colors.textMuted, marginTop: 4 }}>
+                          Foot traffic score: {footTrafficScoreDisplay}
+                          {hasFootTrafficMiles ? (` • Pedestrians: ${item.pedestrianTotal != null ? item.pedestrianTotal : '—'} • /qmi: ${item.pedestrianPerQuarterMile != null ? Number(item.pedestrianPerQuarterMile).toFixed(3) : '—'}`) : ''}
+                        </Text>
+                        <Text style={{ color: colors.textMuted, marginTop: 4 }}>Cleanliness: {safetyDisplay} {item.safetyDescription ? '• ' + item.safetyDescription : ''}</Text>
                         {yourScore != null && (
                           <Text style={{ color: colors.textMuted, marginTop: 4 }}>Your Score: {Number(yourScore).toFixed(3)}</Text>
                         )}
+                      </View>
+                    )}
+
+                    {item.profile === 'rideshare' && (
+                      <View style={{ marginTop: 6 }}>
+                        <Text style={{ color: colors.textMuted, fontWeight: '700' }}>Rideshare: {item.rideshareEstimate != null ? (typeof item.rideshareEstimate === 'string' ? item.rideshareEstimate : ('$' + Number(item.rideshareEstimate).toFixed(2))) : '—'}</Text>
+                        <Text style={{ color: colors.textMuted, marginTop: 4 }}>
+                          Foot traffic score: {footTrafficScoreDisplay}
+                          {hasFootTrafficMiles ? (` • Pedestrians: ${item.pedestrianTotal != null ? item.pedestrianTotal : '—'} • /qmi: ${item.pedestrianPerQuarterMile != null ? Number(item.pedestrianPerQuarterMile).toFixed(3) : '—'}`) : ''}
+                        </Text>
+                        <Text style={{ color: colors.textMuted, marginTop: 4 }}>Cleanliness: {safetyDisplay} {item.safetyDescription ? '• ' + item.safetyDescription : ''}</Text>
+                        <Text style={{ color: colors.textMuted, marginTop: 4 }}>Your Score: {rideshareYourScore != null ? Number(rideshareYourScore).toFixed(3) : '—'}</Text>
                       </View>
                     )}
                   </TouchableOpacity>

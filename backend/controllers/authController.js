@@ -318,21 +318,55 @@ exports.addRouteFeedback = async (req, res) => {
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ message: 'User not found' });
 
-    const route = user.routes.id(routeId);
-    if (!route) return res.status(404).json({ message: 'Route not found' });
+    // Try robust ways to find the route (subdocument id or plain _id string)
+    let route = null;
+    try {
+      route = user.routes.id ? user.routes.id(routeId) : null;
+    } catch (e) {
+      route = null;
+    }
+    if (!route) {
+      // fallback: find by string match of _id
+      route = (user.routes || []).find(r => String(r._id) === String(routeId));
+    }
+    if (!route) {
+      console.warn('addRouteFeedback: route not found for user', userId, 'routeId', routeId, 'user.routes.length', (user.routes || []).length);
+      return res.status(404).json({ message: 'Route not found' });
+    }
+
+    console.log('addRouteFeedback: found route', { userId, routeId, routeStart: route.start, routeEnd: route.end });
+
+    // Sanitize incoming ratings: only allow known keys and numeric values
+    const allowedKeys = ['lighting','footTraffic','cleanliness','crime','speed','cost'];
+    const sanitizedRatings = {};
+    if (ratings && typeof ratings === 'object') {
+      for (const k of allowedKeys) {
+        if (ratings[k] != null && !isNaN(Number(ratings[k]))) {
+          const v = Number(ratings[k]);
+          // clamp to 0..20
+          sanitizedRatings[k] = Math.max(0, Math.min(20, v));
+        }
+      }
+    }
 
     route.feedback = route.feedback || {};
-    route.feedback.ratings = ratings || route.feedback.ratings || {};
-    route.feedback.comments = comments || route.feedback.comments || "";
+    route.feedback.ratings = Object.keys(sanitizedRatings).length > 0 ? sanitizedRatings : (route.feedback.ratings || {});
+    route.feedback.comments = (typeof comments === 'string' && comments.length > 0) ? comments : (route.feedback.comments || '');
     route.feedback.ratedAt = new Date();
     if (ratedBy) route.feedback.ratedBy = ratedBy;
 
+    // Mark the routes array modified so mongoose persists subdocument changes
+    try { user.markModified('routes'); } catch (e) {}
+
     await user.save();
 
-    res.json({ success: true, route });
+    // Return the updated route object (find again to ensure _id etc.)
+    const outRoute = (user.routes || []).find(r => String(r._id) === String(routeId));
+    res.json({ success: true, route: outRoute });
   } catch (err) {
-    console.error('addRouteFeedback error', err);
-    res.status(500).json({ message: 'Failed to save feedback' });
+    console.error('addRouteFeedback error', err && (err.stack || err));
+    // include original error message in response for debugging (non-production)
+    res.status(500).json({ message: 'Failed to save feedback', error: (err && err.message) || String(err) });
   }
 };
 
