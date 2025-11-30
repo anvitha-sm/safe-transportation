@@ -1,122 +1,122 @@
 exports.busDirections = async (req, res) => {
-    console.log('TRANSITLAND_TOKEN from env:', process.env.TRANSITLAND_TOKEN);
-  try {
-    const { from, to, date, time } = req.query;
-    if (!from || !to) return res.status(400).json({ message: 'Missing from or to coordinates' });
-    const token = process.env.TRANSITLAND_TOKEN;
-    if (!token) return res.status(500).json({ message: 'Transitland token not configured on server' });
- 
-    async function getNearestStop(lonlat) {
-      const [lon, lat] = lonlat.split(',').map(Number);
-      const stopsUrl = `https://transit.land/api/v2/rest/stops?lon=${lon}&lat=${lat}&r=1000&per_page=1&api_key=${token}`;
-      const stopsResp = await fetch(stopsUrl);
-      const stopsJson = await stopsResp.json();
-      console.log('Transitland stops API response:', stopsJson);
-      if (stopsJson.stops && stopsJson.stops.length > 0) {
-        const stop = stopsJson.stops[0];
-        console.log('Snapped to stop:', stop.name, stop.lon, stop.lat);
-        return `${stop.lon},${stop.lat}`;
-      }
-      console.log('No nearby stop found, using original coordinates');
-      return lonlat;
-    }
-
-    const snappedFrom = await getNearestStop(from);
-    const snappedTo = await getNearestStop(to);
-    console.log('Snapped origin:', snappedFrom, 'Snapped destination:', snappedTo);
-
-    const now = new Date();
-    const queryDate = date || now.toISOString().slice(0, 10); 
-    const queryTime = time || now.toTimeString().slice(0, 8); 
-    const url = `https://transit.land/api/v2/routing/otp/plan?fromPlace=${snappedFrom}&toPlace=${snappedTo}&date=${queryDate}&time=${queryTime}&api_key=${token}`;
-    console.log('Transitland Routing API URL:', url);
-    let resp = await fetch(url);
-    let respText = await resp.text();
-    let errorJson = null;
-    if (!resp.ok) {
-      try { errorJson = JSON.parse(respText); } catch (e) {}
-      console.warn('Transitland routing non-ok', respText);
-
-      console.warn('Transitland status:', resp.status);
-      console.warn('Transitland headers:', JSON.stringify([...resp.headers]));
-      if (errorJson) {
-        console.warn('Transitland error JSON:', errorJson);
-      } else {
-        console.warn('Transitland error not JSON:', respText);
-      }
-      return res.status(500).json({ message: 'Failed to fetch bus routes', details: respText, status: resp.status });
-    }
-    console.log('Transitland Routing API response:', respText);
-    const j = JSON.parse(respText);
-
-    const rawItins = j.plan?.itineraries || [];
-
-    const limited = rawItins.slice(0, 2);
-
-    function decodePolyline(encoded) {
-      if (!encoded) return [];
-      let index = 0, lat = 0, lng = 0, coordinates = [];
-      const length = encoded.length;
-      while (index < length) {
-        let b, shift = 0, result = 0;
-        do { b = encoded.charCodeAt(index++) - 63; result |= (b & 0x1f) << shift; shift += 5; } while (b >= 0x20);
-        const deltaLat = ((result & 1) ? ~(result >> 1) : (result >> 1));
-        lat += deltaLat;
-        shift = 0; result = 0;
-        do { b = encoded.charCodeAt(index++) - 63; result |= (b & 0x1f) << shift; shift += 5; } while (b >= 0x20);
-        const deltaLng = ((result & 1) ? ~(result >> 1) : (result >> 1));
-        lng += deltaLng;
-        coordinates.push([lng / 1e5, lat / 1e5]);
-      }
-      return coordinates;
-    }
-
-    const itineraries = limited.map((itinerary) => {
-      const coords = [];
-      if (Array.isArray(itinerary.legs)) {
-        for (const leg of itinerary.legs) {
-            try {
-              const pts = leg.legGeometry && leg.legGeometry.points;
-              if (typeof pts === 'string' && pts.length > 0) {
-                const dec = decodePolyline(pts);
-                coords.push(...dec);
-              } else if (leg.geometry && leg.geometry.type === 'LineString' && Array.isArray(leg.geometry.coordinates)) {
-                coords.push(...leg.geometry.coordinates);
-              }
-            } catch (e) {
-              console.warn('leg decode failed', e);
-            }
-        }
-      }
-      const geo = coords.length > 0 ? { type: 'LineString', coordinates: coords } : null;
-      return {
-        duration: itinerary.duration,
-        distance: itinerary.distance,
-        startTime: itinerary.startTime,
-        endTime: itinerary.endTime,
-        walkTime: itinerary.walkTime,
-        walkDistance: itinerary.walkDistance,
-        transitTime: itinerary.transitTime,
-        transitDistance: itinerary.transitDistance,
-        waitingTime: itinerary.waitingTime,
-        transfers: itinerary.transfers,
-        legs: itinerary.legs,
-        geometry: geo,
-      };
-    });
-    // Attempt to compute cleanliness and foot-traffic for bus itineraries so bus cards
-    // can display the same cleanliness/foot-traffic fields as driving/walking routes.
-    try {
-      const StreetCleanlinessLocal = require('../models/StreetCleanliness');
-      const mongooseLocal = require('mongoose');
-      for (const route of itineraries) {
+      // Helper: compute crime totals for a route. We will try to use a Mongo collection
+      // named `annotatedcrime` if available; otherwise fall back to parsing the CSV
+      // at `mongodb/annotatedcrime.csv` in the repo root. The CSV's last column is
+      // severity, and the two columns before are latitude and longitude.
+      let crimePointsCache = null; // lazy-loaded array of { lat, lon, severity }
+      async function loadCrimePoints() {
+        if (crimePointsCache) return crimePointsCache;
+        // Try to load from Mongo collection first
         try {
-          const coords = route.geometry && Array.isArray(route.geometry.coordinates) ? route.geometry.coordinates : [];
-          if (!coords || coords.length < 2) {
-            route.safetyScore = null; route.safetyDescription = 'unknown'; route.avgStreetScore = null;
-            route.pedestrianTotal = null; route.footTrafficScore = null; route.pedestrianPerQuarterMile = null;
-            continue;
+          if (mongoose && mongoose.connection && mongoose.connection.readyState === 1) {
+            const coll = mongoose.connection.collection('annotatedcrime');
+            if (coll) {
+              try {
+                const docs = await coll.find({}).project({ latitude: 1, LATITUDE: 1, lat: 1, longitude: 1, LONGITUDE: 1, lon: 1, severity: 1, Severity: 1, CrimeSeverity: 1 }).toArray();
+                const pts = [];
+                for (const d of docs) {
+                  let lat = null, lon = null, sev = null;
+                  if (d.latitude != null) lat = Number(d.latitude);
+                  else if (d.LATITUDE != null) lat = Number(d.LATITUDE);
+                  else if (d.lat != null) lat = Number(d.lat);
+                  if (d.longitude != null) lon = Number(d.longitude);
+                  else if (d.LONGITUDE != null) lon = Number(d.LONGITUDE);
+                  else if (d.lon != null) lon = Number(d.lon);
+                  if (d.severity != null) sev = Number(d.severity);
+                  else if (d.Severity != null) sev = Number(d.Severity);
+                  else if (d.CrimeSeverity != null) sev = Number(d.CrimeSeverity);
+                  if (lat != null && lon != null && !isNaN(lat) && !isNaN(lon) && sev != null && !isNaN(sev)) pts.push({ lat, lon, severity: sev });
+                }
+                if (pts.length > 0) { crimePointsCache = pts; return crimePointsCache; }
+              } catch (e) {
+                // fall through to CSV parsing
+              }
+            }
           }
+        } catch (e) {
+          // ignore
+        }
+
+        // Fallback: parse CSV file in repo at mongodb/annotatedcrime.csv
+        try {
+          const fs = require('fs');
+          const path = require('path');
+          const csvPath = path.join(__dirname, '..', '..', 'mongodb', 'annotatedcrime.csv');
+          if (fs.existsSync(csvPath)) {
+            const data = fs.readFileSync(csvPath, 'utf8');
+            const lines = data.split(/\r?\n/).filter(l => l.trim().length > 0);
+            const pts = [];
+            for (const line of lines) {
+              // CSV may contain commas inside quoted fields; do a simple split from the end
+              const parts = line.split(',');
+              if (parts.length < 3) continue;
+              // last value is severity, two before are lat, lon (per user's note)
+              const severityRaw = parts[parts.length - 1];
+              const latRaw = parts[parts.length - 3];
+              const lonRaw = parts[parts.length - 2];
+              const lat = Number((latRaw || '').trim());
+              const lon = Number((lonRaw || '').trim());
+              const sev = Number((severityRaw || '').trim());
+              if (!isNaN(lat) && !isNaN(lon) && !isNaN(sev)) pts.push({ lat, lon, severity: sev });
+            }
+            crimePointsCache = pts;
+            return crimePointsCache;
+          }
+        } catch (e) {
+          // ignore
+        }
+        crimePointsCache = [];
+        return crimePointsCache;
+      }
+
+      // Given a route (coords array of [lon,lat]), sum severity of crimes near the route.
+      // We'll count a crime if it's within CRIME_BUFFER_METERS of any segment midpoint.
+      function pointDistanceMeters(lat1, lon1, lat2, lon2) {
+        const toRad = (v) => (v * Math.PI) / 180;
+        const R = 6371;
+        const dLat = toRad(lat2 - lat1);
+        const dLon = toRad(lon2 - lon1);
+        const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        return R * c * 1000;
+      }
+
+      async function computeCrimeForRoute(coords) {
+        const pts = await loadCrimePoints();
+        if (!Array.isArray(coords) || coords.length < 2) return { crimeTotal: 0, crimePerMile: 0, crimeScore: null };
+        const CRIME_BUFFER_METERS = 50; // count crimes within 50m of route
+        // build segment midpoints
+        const mids = [];
+        let totalMeters = 0;
+        for (let i = 0; i < coords.length - 1; i++) {
+          const a = coords[i]; const b = coords[i+1];
+          const lat1 = a[1], lon1 = a[0], lat2 = b[1], lon2 = b[0];
+          const segLen = pointDistanceMeters(lat1, lon1, lat2, lon2);
+          totalMeters += segLen;
+          const mx = (lat1 + lat2) / 2; const my = (lon1 + lon2) / 2; // note: lat, lon order for distance
+          mids.push({ lat: mx, lon: my, segLen });
+        }
+        if (pts.length === 0) return { crimeTotal: 0, crimePerMile: 0, crimeScore: null };
+        // Sum severity for crimes within buffer of any midpoint
+        let crimeSum = 0;
+        for (const c of pts) {
+          try {
+            for (const m of mids) {
+              const d = pointDistanceMeters(c.lat, c.lon, m.lat, m.lon);
+              if (d <= CRIME_BUFFER_METERS) { crimeSum += Number(c.severity || 0); break; }
+            }
+          } catch (e) { }
+        }
+        const miles = totalMeters > 0 ? (totalMeters / 1609.344) : 0;
+        const crimePerMile = miles > 0 ? (crimeSum / miles) : 0;
+        // Normalize into 0..1 where 1 is best (low crime). We'll use a scale where >=50 severity/mile -> worst (0)
+        let crimeScore = null;
+        if (miles > 0) {
+          const capped = Math.max(0, Math.min(1, crimePerMile / 50));
+          crimeScore = Math.round((1 - capped) * 1000) / 1000;
+        }
+        return { crimeTotal: Math.round(crimeSum), crimePerMile: Math.round(crimePerMile * 1000) / 1000, crimeScore };
+      }
 
           const routeLine = { type: 'LineString', coordinates: coords };
           let found = null;
@@ -324,6 +324,16 @@ exports.busDirections = async (req, res) => {
               route.pedestrianPerQuarterMile = Math.round(pedPerQuarter * 1000) / 1000;
             } else { route.footTrafficScore = null; route.pedestrianPerQuarterMile = null; }
           } catch (e) { route.pedestrianTotal = null; route.footTrafficScore = null; route.pedestrianPerQuarterMile = null; }
+
+          // Crime aggregation: attach crimeTotal, crimePerMile, crimeScore to route
+          try {
+            const crimeRes = await computeCrimeForRoute(coords);
+            route.crimeTotal = crimeRes.crimeTotal;
+            route.crimePerMile = crimeRes.crimePerMile;
+            route.crimeScore = crimeRes.crimeScore; // 0..1 where 1 is best (low crime)
+          } catch (e) {
+            route.crimeTotal = null; route.crimePerMile = null; route.crimeScore = null;
+          }
 
         } catch (e) {
           route.safetyScore = null; route.safetyDescription = 'unknown'; route.avgStreetScore = null;
@@ -1169,6 +1179,100 @@ exports.directions = async (req, res) => {
               route.footTrafficScore = null;
               route.pedestrianPerQuarterMile = null;
             }
+              // Crime aggregation for driving/walking routes: sum severities near route
+              try {
+                async function loadCrimePointsLocal() {
+                  // try mongo first
+                  try {
+                    if (mongoose && mongoose.connection && mongoose.connection.readyState === 1) {
+                      const coll = mongoose.connection.collection('annotatedcrime');
+                      if (coll) {
+                        const docs = await coll.find({}).project({ latitude: 1, LATITUDE: 1, lat: 1, longitude: 1, LONGITUDE: 1, lon: 1, severity: 1, Severity: 1, CrimeSeverity: 1 }).toArray();
+                        const out = [];
+                        for (const d of docs) {
+                          let lat = null, lon = null, sev = null;
+                          if (d.latitude != null) lat = Number(d.latitude);
+                          else if (d.LATITUDE != null) lat = Number(d.LATITUDE);
+                          else if (d.lat != null) lat = Number(d.lat);
+                          if (d.longitude != null) lon = Number(d.longitude);
+                          else if (d.LONGITUDE != null) lon = Number(d.LONGITUDE);
+                          else if (d.lon != null) lon = Number(d.lon);
+                          if (d.severity != null) sev = Number(d.severity);
+                          else if (d.Severity != null) sev = Number(d.Severity);
+                          else if (d.CrimeSeverity != null) sev = Number(d.CrimeSeverity);
+                          if (lat != null && lon != null && !isNaN(lat) && !isNaN(lon) && sev != null && !isNaN(sev)) out.push({ lat, lon, severity: sev });
+                        }
+                        if (out.length > 0) return out;
+                      }
+                    }
+                  } catch (e) {}
+                  // fallback CSV parse
+                  try {
+                    const fs = require('fs'); const path = require('path');
+                    const csvPath = path.join(__dirname, '..', '..', 'mongodb', 'annotatedcrime.csv');
+                    if (fs.existsSync(csvPath)) {
+                      const data = fs.readFileSync(csvPath, 'utf8');
+                      const lines = data.split(/\r?\n/).filter(l => l.trim().length > 0);
+                      const out = [];
+                      for (const line of lines) {
+                        const parts = line.split(',');
+                        if (parts.length < 3) continue;
+                        const severityRaw = parts[parts.length - 1];
+                        const latRaw = parts[parts.length - 3];
+                        const lonRaw = parts[parts.length - 2];
+                        const lat = Number((latRaw || '').trim());
+                        const lon = Number((lonRaw || '').trim());
+                        const sev = Number((severityRaw || '').trim());
+                        if (!isNaN(lat) && !isNaN(lon) && !isNaN(sev)) out.push({ lat, lon, severity: sev });
+                      }
+                      return out;
+                    }
+                  } catch (e) {}
+                  return [];
+                }
+
+                function ptDist(lat1, lon1, lat2, lon2) {
+                  const toRad = (v) => (v * Math.PI) / 180;
+                  const R = 6371;
+                  const dLat = toRad(lat2 - lat1);
+                  const dLon = toRad(lon2 - lon1);
+                  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+                  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+                  return R * c * 1000;
+                }
+
+                const pts = await loadCrimePointsLocal();
+                let totalMeters2 = 0;
+                const mids2 = [];
+                for (let i = 0; i < coords.length - 1; i++) {
+                  const a = coords[i]; const b = coords[i+1];
+                  const lat1 = a[1], lon1 = a[0], lat2 = b[1], lon2 = b[0];
+                  const segLen = ptDist(lat1, lon1, lat2, lon2);
+                  totalMeters2 += segLen;
+                  const mx = (lat1 + lat2) / 2; const my = (lon1 + lon2) / 2;
+                  mids2.push({ lat: mx, lon: my, segLen });
+                }
+                let crimeSum2 = 0;
+                const BUF = 50;
+                for (const c of pts) {
+                  for (const m of mids2) {
+                    const d = ptDist(c.lat, c.lon, m.lat, m.lon);
+                    if (d <= BUF) { crimeSum2 += Number(c.severity || 0); break; }
+                  }
+                }
+                const miles2 = totalMeters2 > 0 ? (totalMeters2 / 1609.344) : 0;
+                const crimePerMile2 = miles2 > 0 ? (crimeSum2 / miles2) : 0;
+                let crimeScore2 = null;
+                if (miles2 > 0) {
+                  const capped = Math.max(0, Math.min(1, crimePerMile2 / 50));
+                  crimeScore2 = Math.round((1 - capped) * 1000) / 1000;
+                }
+                route.crimeTotal = Math.round(crimeSum2);
+                route.crimePerMile = Math.round(crimePerMile2 * 1000) / 1000;
+                route.crimeScore = crimeScore2;
+              } catch (e) {
+                route.crimeTotal = null; route.crimePerMile = null; route.crimeScore = null;
+              }
             if (req.query && req.query.debug === 'true') route.safetyDebug = debugMsgs;
           }
         } catch (e) {
