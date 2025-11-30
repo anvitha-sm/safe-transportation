@@ -104,6 +104,236 @@ exports.busDirections = async (req, res) => {
         geometry: geo,
       };
     });
+    // Attempt to compute cleanliness and foot-traffic for bus itineraries so bus cards
+    // can display the same cleanliness/foot-traffic fields as driving/walking routes.
+    try {
+      const StreetCleanlinessLocal = require('../models/StreetCleanliness');
+      const mongooseLocal = require('mongoose');
+      for (const route of itineraries) {
+        try {
+          const coords = route.geometry && Array.isArray(route.geometry.coordinates) ? route.geometry.coordinates : [];
+          if (!coords || coords.length < 2) {
+            route.safetyScore = null; route.safetyDescription = 'unknown'; route.avgStreetScore = null;
+            route.pedestrianTotal = null; route.footTrafficScore = null; route.pedestrianPerQuarterMile = null;
+            continue;
+          }
+
+          const routeLine = { type: 'LineString', coordinates: coords };
+          let found = null;
+          try { found = await StreetCleanlinessLocal.findOne({ geometry: { $geoIntersects: { $geometry: routeLine } } }).lean(); } catch (e) { found = null; }
+          if (!found) {
+            // try nearest to midpoint
+            try {
+              const mid = coords[Math.floor(coords.length / 2)];
+              const pt = { type: 'Point', coordinates: [mid[0], mid[1]] };
+              found = await StreetCleanlinessLocal.findOne({ geometry: { $nearSphere: { $geometry: pt, $maxDistance: 5000 } } }).lean();
+            } catch (e) { found = null; }
+          }
+
+          let sVal = null; let rawCSGrade = null;
+          if (found) {
+            try {
+              const p = found.properties || {};
+              let sRaw = null; let usedKey = null;
+              if (typeof p.score === 'number') { sRaw = p.score; usedKey = 'score'; }
+              else if (p.CSGrade != null) { sRaw = p.CSGrade; usedKey = 'CSGrade'; }
+              else if (p.CSRoundSco != null) { sRaw = p.CSRoundSco; usedKey = 'CSRoundSco'; }
+              else if (p.CSscor != null) { sRaw = p.CSscor; usedKey = 'CSscor'; }
+              else if (p.CSRoundScore != null) { sRaw = p.CSRoundScore; usedKey = 'CSRoundScore'; }
+              else if (p.cleanliness != null) { sRaw = p.cleanliness; usedKey = 'cleanliness'; }
+              else if (p.value != null) { sRaw = p.value; usedKey = 'value'; }
+              else if (p.raw) {
+                const raw = p.raw || {};
+                if (raw.CSGrade != null) { sRaw = raw.CSGrade; usedKey = 'CSGrade'; }
+                else if (raw.CSRoundSco != null) { sRaw = raw.CSRoundSco; usedKey = 'CSRoundSco'; }
+                else if (raw.CSscor != null) { sRaw = raw.CSscor; usedKey = 'CSscor'; }
+                else if (raw.CSRoundScore != null) { sRaw = raw.CSRoundScore; usedKey = 'CSRoundScore'; }
+                else if (raw.score != null) { sRaw = raw.score; usedKey = 'score'; }
+                else if (raw.cleanliness != null) { sRaw = raw.cleanliness; usedKey = 'cleanliness'; }
+                else if (raw.value != null) { sRaw = raw.value; usedKey = 'value'; }
+              }
+              if (sRaw != null && !isNaN(Number(sRaw))) {
+                const num = Number(sRaw);
+                let treatAsCSGrade = false;
+                if (usedKey === 'CSGrade') treatAsCSGrade = true;
+                else if (usedKey === 'cleanliness' || usedKey === 'CSRoundSco' || usedKey === 'CSRoundScore' || usedKey === 'CSscor') {
+                  if (Number.isInteger(num) && num >= 1 && num <= 3) treatAsCSGrade = true;
+                } else if (Number.isInteger(num) && num >= 1 && num <= 3) treatAsCSGrade = true;
+
+                if (treatAsCSGrade) {
+                  const minG = 1.0; const maxG = 3.0;
+                  const recip = 1 / Math.max(0.0001, num);
+                  const minRecip = 1 / maxG; const maxRecip = 1 / minG;
+                  const norm = (recip - minRecip) / Math.max(1e-6, (maxRecip - minRecip));
+                  sVal = norm * 100; rawCSGrade = num;
+                } else { sVal = num; }
+              }
+            } catch (e) { /* ignore */ }
+          }
+
+          if (sVal != null) {
+            let avgByTotal = sVal; if (avgByTotal <= 1) avgByTotal = avgByTotal * 100;
+            const normalized01 = avgByTotal / 100;
+            route.safetyScore = Math.round(normalized01 * 1000) / 1000;
+            if (route.safetyScore >= 0.75) route.safetyDescription = 'clean';
+            else if (route.safetyScore >= 0.40) route.safetyDescription = 'moderate';
+            else route.safetyDescription = 'dirty';
+            route.avgStreetScore = rawCSGrade != null ? Math.round(rawCSGrade * 1000) / 1000 : null;
+          } else {
+            // Perform a per-segment nearest-neighbor fallback so we can still compute a score
+            // even when no single cleanliness feature intersects the whole route.
+            try {
+              const segments = [];
+              let totalDistance = 0;
+              for (let i = 0; i < coords.length - 1; i++) {
+                const a = coords[i]; const b = coords[i+1];
+                const segLat1 = a[1], segLon1 = a[0], segLat2 = b[1], segLon2 = b[0];
+                const toRad = (v) => (v * Math.PI) / 180;
+                const R = 6371;
+                const dLat = toRad(segLat2 - segLat1);
+                const dLon = toRad(segLon2 - segLon1);
+                const aa = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(toRad(segLat1)) * Math.cos(toRad(segLat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+                const cc = 2 * Math.atan2(Math.sqrt(aa), Math.sqrt(1 - aa));
+                const segLen = R * cc * 1000;
+                totalDistance += segLen;
+                const mx = (a[0] + b[0]) / 2;
+                const my = (a[1] + b[1]) / 2;
+                segments.push({ a, b, mx, my, segLen });
+              }
+              let weightedSum = 0; let matchedDistance = 0; let matchCounts = 0; let sawLargeScore = false; let weightedSumCSGradeRaw = 0; let matchedDistanceCSGrade = 0;
+              for (const seg of segments) {
+                try {
+                  const pt = { type: 'Point', coordinates: [seg.mx, seg.my] };
+                  const nearDoc = await StreetCleanlinessLocal.findOne({ geometry: { $nearSphere: { $geometry: pt, $maxDistance: 20000 } } }).lean();
+                  if (!nearDoc) continue;
+                  // extract raw score
+                  let sRaw2 = null; let usedKey2 = null;
+                  if (nearDoc.properties) {
+                    const p2 = nearDoc.properties;
+                    if (typeof p2.score === 'number') { sRaw2 = p2.score; usedKey2 = 'score'; }
+                    else if (p2.CSGrade != null) { sRaw2 = p2.CSGrade; usedKey2 = 'CSGrade'; }
+                    else if (p2.CSRoundSco != null) { sRaw2 = p2.CSRoundSco; usedKey2 = 'CSRoundSco'; }
+                    else if (p2.CSscor != null) { sRaw2 = p2.CSscor; usedKey2 = 'CSscor'; }
+                    else if (p2.CSRoundScore != null) { sRaw2 = p2.CSRoundScore; usedKey2 = 'CSRoundScore'; }
+                    else if (p2.cleanliness != null) { sRaw2 = p2.cleanliness; usedKey2 = 'cleanliness'; }
+                    else if (p2.value != null) { sRaw2 = p2.value; usedKey2 = 'value'; }
+                    else if (p2.raw) {
+                      const raw2 = p2.raw || {};
+                      if (raw2.CSGrade != null) { sRaw2 = raw2.CSGrade; usedKey2 = 'CSGrade'; }
+                      else if (raw2.CSRoundSco != null) { sRaw2 = raw2.CSRoundSco; usedKey2 = 'CSRoundSco'; }
+                      else if (raw2.CSscor != null) { sRaw2 = raw2.CSscor; usedKey2 = 'CSscor'; }
+                      else if (raw2.CSRoundScore != null) { sRaw2 = raw2.CSRoundScore; usedKey2 = 'CSRoundScore'; }
+                      else if (raw2.score != null) { sRaw2 = raw2.score; usedKey2 = 'score'; }
+                      else if (raw2.cleanliness != null) { sRaw2 = raw2.cleanliness; usedKey2 = 'cleanliness'; }
+                      else if (raw2.value != null) { sRaw2 = raw2.value; usedKey2 = 'value'; }
+                    }
+                  }
+                  if (sRaw2 == null || isNaN(Number(sRaw2))) continue;
+                  let s2 = null; const num2 = Number(sRaw2);
+                  let treatAsCSGrade2 = false;
+                  if (usedKey2 === 'CSGrade') treatAsCSGrade2 = true;
+                  else if (usedKey2 === 'cleanliness' || usedKey2 === 'CSRoundSco' || usedKey2 === 'CSRoundScore' || usedKey2 === 'CSscor') {
+                    if (Number.isInteger(num2) && num2 >= 1 && num2 <= 3) treatAsCSGrade2 = true;
+                  } else if (Number.isInteger(num2) && num2 >= 1 && num2 <= 3) treatAsCSGrade2 = true;
+                  if (treatAsCSGrade2) {
+                    const minG = 1.0; const maxG = 3.0;
+                    const recip = 1 / Math.max(0.0001, num2);
+                    const minRecip = 1 / maxG; const maxRecip = 1 / minG;
+                    const norm = (recip - minRecip) / Math.max(1e-6, (maxRecip - minRecip));
+                    s2 = norm * 100;
+                  } else { s2 = num2; }
+                  // distance penalty: approximate direct distance between seg midpoint and doc first coord
+                  let penalty = 1;
+                  try {
+                    let docCoord = null;
+                    if (nearDoc.geometry && nearDoc.geometry.type === 'LineString' && Array.isArray(nearDoc.geometry.coordinates) && nearDoc.geometry.coordinates.length > 0) docCoord = nearDoc.geometry.coordinates[0];
+                    else if (nearDoc.geometry && nearDoc.geometry.type === 'Point') docCoord = nearDoc.geometry.coordinates;
+                    if (docCoord) {
+                      const segDist = distanceMeters(seg.my, seg.mx, docCoord[1], docCoord[0]);
+                      penalty = 1 / (1 + (segDist / 1000));
+                    }
+                  } catch (e) { penalty = 1; }
+                  weightedSum += s2 * seg.segLen * penalty;
+                  matchedDistance += seg.segLen * penalty;
+                  matchCounts += 1;
+                  if (usedKey2 === 'CSGrade') { weightedSumCSGradeRaw += num2 * seg.segLen * penalty; matchedDistanceCSGrade += seg.segLen * penalty; }
+                  if (typeof s2 === 'number' && s2 > 10) sawLargeScore = true;
+                } catch (e) {
+                  // ignore per-seg failures
+                }
+              }
+              if (!sawLargeScore && matchedDistance > 0) {
+                weightedSum = weightedSum * 100;
+              }
+              if (matchedDistance > 0 && totalDistance > 0) {
+                const avgByTotal2 = weightedSum / totalDistance;
+                const normalized012 = avgByTotal2 / 100;
+                route.safetyScore = Math.round(normalized012 * 1000) / 1000;
+                if (route.safetyScore >= 0.75) route.safetyDescription = 'clean';
+                else if (route.safetyScore >= 0.40) route.safetyDescription = 'moderate';
+                else route.safetyDescription = 'dirty';
+                if (matchedDistanceCSGrade > 0) route.avgStreetScore = Math.round((weightedSumCSGradeRaw / matchedDistanceCSGrade) * 1000) / 1000;
+                else route.avgStreetScore = null;
+              } else {
+                route.safetyScore = null; route.safetyDescription = 'unknown'; route.avgStreetScore = null;
+              }
+            } catch (e) {
+              route.safetyScore = null; route.safetyDescription = 'unknown'; route.avgStreetScore = null;
+            }
+          }
+
+          // foot traffic
+          try {
+            let pedSum = 0;
+            if (mongooseLocal && mongooseLocal.connection && mongooseLocal.connection.readyState === 1) {
+              const coll = mongooseLocal.connection.collection('foottraffic');
+              if (coll) {
+                const matches = await coll.find({ geometry: { $geoIntersects: { $geometry: routeLine } } }).project({ Ped_Total: 1, PedTotal: 1, ped_total: 1, pedTotal: 1 }).toArray();
+                if (Array.isArray(matches) && matches.length > 0) {
+                  for (const m of matches) {
+                    let v = null;
+                    if (m.Ped_Total != null) v = m.Ped_Total;
+                    else if (m.PedTotal != null) v = m.PedTotal;
+                    else if (m.ped_total != null) v = m.ped_total;
+                    else if (m.pedTotal != null) v = m.pedTotal;
+                    if (v == null) continue;
+                    if (typeof v === 'string') v = v.replace(/,/g, '');
+                    const n = Number(v); if (!isNaN(n)) pedSum += n;
+                  }
+                }
+              }
+            }
+            route.pedestrianTotal = Math.round(pedSum);
+            // approximate route length
+            let totalMeters = 0;
+            for (let i = 0; i < coords.length - 1; i++) {
+              const a = coords[i]; const b = coords[i+1];
+              const lat1 = a[1], lon1 = a[0], lat2 = b[1], lon2 = b[0];
+              const toRad = (v) => (v * Math.PI) / 180;
+              const R = 6371;
+              const dLat = toRad(lat2 - lat1); const dLon = toRad(lon2 - lon1);
+              const aa = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+              const cc = 2 * Math.atan2(Math.sqrt(aa), Math.sqrt(1 - aa));
+              totalMeters += R * cc * 1000;
+            }
+            const milesVal = totalMeters > 0 ? (totalMeters / 1609.344) : 0;
+            if (milesVal > 0) {
+              const pedPerQuarter = (route.pedestrianTotal * 0.25) / milesVal;
+              const normalized = Math.max(0, Math.min(1, pedPerQuarter / 20));
+              route.footTrafficScore = Math.round(normalized * 1000) / 1000;
+              route.pedestrianPerQuarterMile = Math.round(pedPerQuarter * 1000) / 1000;
+            } else { route.footTrafficScore = null; route.pedestrianPerQuarterMile = null; }
+          } catch (e) { route.pedestrianTotal = null; route.footTrafficScore = null; route.pedestrianPerQuarterMile = null; }
+
+        } catch (e) {
+          route.safetyScore = null; route.safetyDescription = 'unknown'; route.avgStreetScore = null;
+          route.pedestrianTotal = null; route.footTrafficScore = null; route.pedestrianPerQuarterMile = null;
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to compute bus route safety/foot-traffic', e);
+    }
+
     res.json({ routes: itineraries });
   } catch (err) {
     console.error('busDirections proxy error', err);

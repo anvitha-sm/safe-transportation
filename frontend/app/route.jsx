@@ -188,6 +188,7 @@ export default function RouteScreen() {
   const [userName, setUserName] = useState('');
   const [userSafetyPref, setUserSafetyPref] = useState(10); 
   const [userFootPref, setUserFootPref] = useState(10); 
+  const [userSpeedPref, setUserSpeedPref] = useState(10);
   const [userCostPref, setUserCostPref] = useState(10);
   const [fromText, setFromText] = useState('');
   const [toText, setToText] = useState('');
@@ -219,6 +220,8 @@ export default function RouteScreen() {
       if (pref != null) setUserSafetyPref(Number(pref));
       const footPref = parsed?.preferences?.footTraffic ?? parsed?.footTraffic ?? null;
       if (footPref != null) setUserFootPref(Number(footPref));
+      const speedPref = parsed?.preferences?.speed ?? parsed?.speed ?? null;
+      if (speedPref != null) setUserSpeedPref(Number(speedPref));
       const costPref = parsed?.preferences?.cost ?? parsed?.cost ?? null;
       if (costPref != null) setUserCostPref(Number(costPref));
     } catch (_e) { }
@@ -275,9 +278,9 @@ export default function RouteScreen() {
         const date = now.toISOString().slice(0, 10);
         const time = now.toTimeString().slice(0, 8);
 
-        const res = await getDirectionsApi(from, to, ['driving','walking']);
+        const res = await getDirectionsApi(from, to, ['driving']);
         const busRes = await getBusDirectionsApi(from, to, date, time);
-        // Build grouped route cards: 1 rideshare (synthetic) if available, up to 2 driving, 1 walking, up to 2 bus
+        // Build grouped route cards: 1 rideshare (synthetic) if available, up to 2 driving, up to 2 bus
         const raw = [];
         if (res && Array.isArray(res.routes)) raw.push(...res.routes);
         if (busRes && Array.isArray(busRes.routes)) {
@@ -291,7 +294,6 @@ export default function RouteScreen() {
         }
 
         const driving = raw.filter(r => r.profile === 'driving').sort((a, b) => (a.duration || 0) - (b.duration || 0));
-        const walking = raw.filter(r => r.profile === 'walking').sort((a, b) => (a.duration || 0) - (b.duration || 0));
         const bus = raw.filter(r => r.profile === 'bus');
 
         const grouped = [];
@@ -301,7 +303,6 @@ export default function RouteScreen() {
           grouped.push({ ...best, profile: 'rideshare', key: 'rideshare' });
         }
         grouped.push(...driving.slice(0, 2));
-        if (walking.length > 0) grouped.push(walking[0]);
         grouped.push(...bus.slice(0, 2));
 
         if (grouped.length > 0) {
@@ -332,10 +333,10 @@ export default function RouteScreen() {
   useEffect(() => {
     if (!fromCoords || !toCoords || !routes || routes.length === 0) return;
 
-    const missing = routes.filter(r => (r.profile === 'driving' || r.profile === 'walking') && r.safetyScore == null && !r._safetyFetchInProgress && !r._safetyFetchTried);
+    const missing = routes.filter(r => (r.profile === 'driving') && r.safetyScore == null && !r._safetyFetchInProgress && !r._safetyFetchTried);
     if (missing.length === 0) return;
 
-    setRoutes(prev => prev.map(p => ((p.profile === 'driving' || p.profile === 'walking') && p.safetyScore == null) ? { ...p, _safetyFetchInProgress: true, _safetyFetchTried: true } : p));
+    setRoutes(prev => prev.map(p => ((p.profile === 'driving') && p.safetyScore == null) ? { ...p, _safetyFetchInProgress: true, _safetyFetchTried: true } : p));
 
     (async () => {
       try {
@@ -382,6 +383,12 @@ export default function RouteScreen() {
   useEffect(() => { (async () => { try { const t = await getMapboxTokenApi(); console.log('[Route] mapbox token fetched:', t ? (typeof t === 'string' ? (t.slice(0,4) + '...') : String(t)) : 'null'); setMapboxToken(t); } catch (_e) { console.warn('[Route] failed to fetch mapbox token'); } })(); }, []);
 
   useEffect(() => { if (webviewReady && pendingPayload && webviewRef.current) { try { webviewRef.current.postMessage(JSON.stringify(pendingPayload)); } catch (_e) {} setPendingPayload(null); } }, [webviewReady, pendingPayload]);
+
+  // Compute speed normalization bounds: min = fastest driving time, max = slowest bus time
+  const drivingDurations = (routes || []).filter(r => r.profile === 'driving' || r.profile === 'rideshare').map(r => Number(r.duration || Infinity));
+  const minDrivingTime = drivingDurations.length > 0 ? Math.min(...drivingDurations) : Infinity;
+  const busDurations = (routes || []).filter(r => r.profile === 'bus').map(r => Number(r.duration || 0));
+  const maxBusTime = busDurations.length > 0 ? Math.max(...busDurations) : 0;
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={{ padding: 16 }}>
@@ -480,8 +487,9 @@ export default function RouteScreen() {
             if (item.profile === 'bus') {
               label = `BUS ${item._busKey ? item._busKey.replace('bus','') : ''}`;
             }
-            const prefMultiplier = Math.max(0, Math.min(Number(userSafetyPref || 0), 20)) / 20;
             const footPrefMultiplier = Math.max(0, Math.min(Number(userFootPref || 0), 20)) / 20;
+            const safetyW = Math.max(0, Math.min(Number(userSafetyPref || 10), 20)) / 20;
+            const speedW = Math.max(0, Math.min(Number(userSpeedPref || 10), 20)) / 20;
             const hasFootTrafficMiles = (item.footTrafficMatchedDistance != null && Number(item.footTrafficMatchedDistance) > 0) || (item.pedestrianTotal != null && Number(item.pedestrianTotal) > 0);
             let footTrafficScoreVal = null;
             let footTrafficScoreDisplay = 'NA';
@@ -509,9 +517,19 @@ export default function RouteScreen() {
             }
 
             let combinedSafetyVal = null;
-            if (baseSafetyVal != null) {
-              combinedSafetyVal = baseSafetyVal;
-              if (footTrafficScoreVal != null) combinedSafetyVal += footTrafficScoreVal * footPrefMultiplier;
+            // Combine cleanliness (baseSafetyVal) and foot-traffic when available.
+            // If both exist, compute a weighted average using user prefs; otherwise fall back to whichever exists.
+            if (baseSafetyVal != null || footTrafficScoreVal != null) {
+              const safetyW = Math.max(0, Math.min(Number(userSafetyPref || 10), 20)) / 20;
+              const footW = Math.max(0, Math.min(Number(userFootPref || 10), 20)) / 20;
+              if (baseSafetyVal != null && footTrafficScoreVal != null) {
+                const denom = (safetyW + footW) || 1;
+                combinedSafetyVal = (baseSafetyVal * safetyW + footTrafficScoreVal * footW) / denom;
+              } else if (baseSafetyVal != null) {
+                combinedSafetyVal = baseSafetyVal;
+              } else {
+                combinedSafetyVal = footTrafficScoreVal;
+              }
             }
 
             let safetyDisplay = '—';
@@ -521,7 +539,53 @@ export default function RouteScreen() {
               safetyDisplay = 'Fetching...';
             }
 
-            const yourScore = (combinedSafetyVal != null) ? (Number(combinedSafetyVal) * prefMultiplier) : null;
+            // Compute speed score: normalize with min driving and max bus times
+            let speedScore = null;
+            try {
+              const dur = Number(item.duration || 0);
+              // fallback: if no bus durations, use a max that's twice the min driving time
+              const effectiveMax = (maxBusTime > 0) ? maxBusTime : (minDrivingTime < Infinity ? (minDrivingTime * 2) : dur || 1);
+              const denom = Math.max(1, effectiveMax - (minDrivingTime < Infinity ? minDrivingTime : 0));
+              speedScore = Math.max(0, Math.min(1, (effectiveMax - dur) / denom));
+            } catch (e) { speedScore = null; }
+
+            // Compute cost score: bus cost = $0, driving cost = $0.60 * miles
+            let costScore = null;
+            try {
+              if (item.profile === 'bus') {
+                costScore = 1; // free or included
+              } else if (item.profile === 'driving' || item.profile === 'rideshare') {
+                const miles = (Number(item.distance || 0) / 1609.344) || 0;
+                const cost = 0.6 * miles;
+                const costNorm = Math.max(0, Math.min(cost, 50)) / 50;
+                costScore = 1 - costNorm;
+              }
+            } catch (e) { costScore = null; }
+
+            // Combine cleanliness (combinedSafetyVal), speed and cost according to user prefs
+            let yourScore = null;
+            const costW = Math.max(0, Math.min(Number(userCostPref || 10), 20)) / 20;
+            if (combinedSafetyVal != null && speedScore != null && costScore != null) {
+              const denom = (safetyW + speedW + costW) || 1;
+              yourScore = ((combinedSafetyVal * safetyW) + (speedScore * speedW) + (costScore * costW)) / denom;
+            } else if (combinedSafetyVal != null && speedScore != null) {
+              const denom = (safetyW + speedW) || 1;
+              yourScore = ((combinedSafetyVal * safetyW) + (speedScore * speedW)) / denom;
+            } else if (combinedSafetyVal != null && costScore != null) {
+              const denom = (safetyW + costW) || 1;
+              yourScore = ((combinedSafetyVal * safetyW) + (costScore * costW)) / denom;
+            } else if (speedScore != null && costScore != null) {
+              const denom = (speedW + costW) || 1;
+              yourScore = ((speedScore * speedW) + (costScore * costW)) / denom;
+            } else if (combinedSafetyVal != null) {
+              yourScore = combinedSafetyVal * (safetyW || 1);
+            } else if (speedScore != null) {
+              yourScore = speedScore * (speedW || 1);
+            } else if (costScore != null) {
+              yourScore = costScore * (costW || 1);
+            } else {
+              yourScore = null;
+            }
             // Rideshare-specific combined score: incorporate cleanliness and foot-traffic (from the driving route)
             // and weight with user cost preference. Display as a decimal 0..1.
             let rideshareYourScore = null;
@@ -556,8 +620,15 @@ export default function RouteScreen() {
                 }
               }
 
-              if (safetyCombined != null) {
-                rideshareYourScore = ((1 - costPref) * safetyCombined) + (costPref * costScore);
+              // incorporate speed into the rideshare score as well
+              const otherDenom = (safetyW + speedW) || 1;
+              let otherCombined = null;
+              if (safetyCombined != null && speedScore != null) otherCombined = ((safetyCombined * safetyW) + (speedScore * speedW)) / otherDenom;
+              else if (safetyCombined != null) otherCombined = safetyCombined;
+              else if (speedScore != null) otherCombined = speedScore;
+
+              if (otherCombined != null) {
+                rideshareYourScore = (costPref * costScore) + ((1 - costPref) * otherCombined);
               } else {
                 rideshareYourScore = costScore;
               }
@@ -578,11 +649,24 @@ export default function RouteScreen() {
                     {item.profile === 'bus' && item.summary && (
                       <Text style={{ color: '#ec4899', fontWeight: '700', marginTop: 4 }}>{item.summary}</Text>
                     )}
-                    {(item.profile === 'driving' || item.profile === 'walking') && (
+                    {item.profile === 'driving' && (
                       <View style={{ marginTop: 6 }}>
                         {item.avgStreetScore != null && (
                           <Text style={{ color: colors.textMuted, marginTop: 4 }}>Avg street score: {Number(item.avgStreetScore).toFixed(2)} (1=best, 3=worst)</Text>
                         )}
+                        <Text style={{ color: colors.textMuted, marginTop: 4 }}>
+                          Foot traffic score: {footTrafficScoreDisplay}
+                          {hasFootTrafficMiles ? (` • Pedestrians: ${item.pedestrianTotal != null ? item.pedestrianTotal : '—'} • /qmi: ${item.pedestrianPerQuarterMile != null ? Number(item.pedestrianPerQuarterMile).toFixed(3) : '—'}`) : ''}
+                        </Text>
+                        <Text style={{ color: colors.textMuted, marginTop: 4 }}>Cleanliness: {safetyDisplay} {item.safetyDescription ? '• ' + item.safetyDescription : ''}</Text>
+                        {yourScore != null && (
+                          <Text style={{ color: colors.textMuted, marginTop: 4 }}>Your Score: {Number(yourScore).toFixed(3)}</Text>
+                        )}
+                      </View>
+                    )}
+
+                    {item.profile === 'bus' && (
+                      <View style={{ marginTop: 6 }}>
                         <Text style={{ color: colors.textMuted, marginTop: 4 }}>
                           Foot traffic score: {footTrafficScoreDisplay}
                           {hasFootTrafficMiles ? (` • Pedestrians: ${item.pedestrianTotal != null ? item.pedestrianTotal : '—'} • /qmi: ${item.pedestrianPerQuarterMile != null ? Number(item.pedestrianPerQuarterMile).toFixed(3) : '—'}`) : ''}
