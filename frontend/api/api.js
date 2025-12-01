@@ -213,19 +213,21 @@ export const getMapboxTokenApi = async () => {
   }
 };
 
-export const getBusDirectionsApi = async (fromLatLon, toLatLon, date, time) => {
+export const getBusDirectionsApi = async (fromLonLat, toLonLat, date, time) => {
   try {
-    const fromParts = fromLatLon.split(',').map(Number);
-    const toParts = toLatLon.split(',').map(Number);
-    const from = `${fromParts[1]},${fromParts[0]}`;
-    const to = `${toParts[1]},${toParts[0]}`;
+    // Keep the same lon,lat ordering as getDirectionsApi and backend expects
+    const [fromlat, fromlon] = fromLonLat.split(',').map(Number);
+    const [tolat, tolon] = toLonLat.split(',').map(Number);
+    const from = `${fromlon},${fromlat}`;
+    const to = `${tolon},${tolat}`;
     let url = `${BASE_URL}/api/bus-directions?from=${from}&to=${to}`;
     if (date) url += `&date=${date}`;
     if (time) url += `&time=${time}`;
     const res = await fetch(url);
     if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.message || 'Bus directions failed');
+      const body = await res.json().catch(() => ({}));
+      console.error('getBusDirectionsApi non-ok response', body);
+      throw new Error(body.message || 'Bus directions failed');
     }
     return await res.json();
   } catch (err) {

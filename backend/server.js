@@ -25,9 +25,22 @@ app.get("/ping", (req, res) => {
 });
 
 app.get('/api/mapbox-token', (req, res) => {
-  
+  // Prefer an explicit public token
   if (process.env.MAPBOX_PUBLIC_TOKEN) return res.json({ token: process.env.MAPBOX_PUBLIC_TOKEN });
-  if (process.env.MAPBOX_TOKEN && process.env.MAPBOX_TOKEN.indexOf('pk.') === 0) return res.json({ token: process.env.MAPBOX_TOKEN });
+
+  // If not set, fall back to MAPBOX_TOKEN when it's clearly a public token.
+  // Mapbox public tokens usually begin with 'pk.'; private tokens begin with 'sk.' and must NOT be exposed.
+  const tb = process.env.MAPBOX_TOKEN;
+  if (tb) {
+    if (typeof tb === 'string' && tb.startsWith('sk.')) {
+      // Do not expose secret keys
+      console.warn('MAPBOX_TOKEN appears to be a secret key (starts with sk.*). Not exposing via /api/mapbox-token');
+      return res.status(404).json({ token: null });
+    }
+    // If it doesn't start with 'sk.', return it (covers tokens that may have lost the 'pk.' prefix accidentally)
+    console.warn('MAPBOX_PUBLIC_TOKEN not set; returning MAPBOX_TOKEN fallback (ensure this is a public key)');
+    return res.json({ token: tb });
+  }
   return res.status(404).json({ token: null });
 });
 

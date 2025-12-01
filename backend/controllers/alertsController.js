@@ -1,77 +1,266 @@
 exports.busDirections = async (req, res) => {
-      // Helper: compute crime totals for a route. We will try to use a Mongo collection
-      // named `annotatedcrime` if available; otherwise fall back to parsing the CSV
-      // at `mongodb/annotatedcrime.csv` in the repo root. The CSV's last column is
-      // severity, and the two columns before are latitude and longitude.
-      let crimePointsCache = null; // lazy-loaded array of { lat, lon, severity }
-      async function loadCrimePoints() {
-        if (crimePointsCache) return crimePointsCache;
-        // Try to load from Mongo collection first
+    console.log('TRANSITLAND_TOKEN from env:', process.env.TRANSITLAND_TOKEN);
+  try {
+    const { from, to, date, time } = req.query;
+    if (!from || !to) return res.status(400).json({ message: 'Missing from or to coordinates' });
+    const token = process.env.TRANSITLAND_TOKEN;
+    if (!token) return res.status(500).json({ message: 'Transitland token not configured on server' });
+
+    async function getNearestStop(lonlat) {
+      const [lat, lon] = lonlat.split(',').map(Number);
+      const stopsUrl = `https://transit.land/api/v2/rest/stops?lon=${lon}&lat=${lat}&r=1000&per_page=1&api_key=${token}`;
+      const stopsResp = await fetch(stopsUrl);
+      const stopsJson = await stopsResp.json();
+      console.log('Transitland stops API response:', stopsJson);
+      if (stopsJson.stops && stopsJson.stops.length > 0) {
+        const stop = stopsJson.stops[0];
+        console.log('Snapped to stop:', stop.name, stop.lon, stop.lat);
+        return `${stop.lon},${stop.lat}`;
+      }
+      console.log('No nearby stop found, using original coordinates');
+      return lonlat;
+    }
+
+    const snappedFrom = await getNearestStop(from);
+    const snappedTo = await getNearestStop(to);
+    console.log('Snapped origin:', snappedFrom, 'Snapped destination:', snappedTo);
+
+    const now = new Date();
+    const queryDate = date || now.toISOString().slice(0, 10); 
+    const queryTime = time || now.toTimeString().slice(0, 8); 
+    const url = `https://transit.land/api/v2/routing/otp/plan?fromPlace=${snappedFrom}&toPlace=${snappedTo}&date=${queryDate}&time=${queryTime}&api_key=${token}`;
+    console.log('Transitland Routing API URL:', url);
+    let resp = await fetch(url);
+    let respText = await resp.text();
+    let errorJson = null;
+    if (!resp.ok) {
+      try { errorJson = JSON.parse(respText); } catch (e) {}
+      console.warn('Transitland routing non-ok', respText);
+
+      console.warn('Transitland status:', resp.status);
+      console.warn('Transitland headers:', JSON.stringify([...resp.headers]));
+      if (errorJson) {
+        console.warn('Transitland error JSON:', errorJson);
+      } else {
+        console.warn('Transitland error not JSON:', respText);
+      }
+      return res.status(500).json({ message: 'Failed to fetch bus routes', details: respText, status: resp.status });
+    }
+    console.log('Transitland Routing API response:', respText);
+    const j = JSON.parse(respText);
+
+    const rawItins = j.plan?.itineraries || [];
+
+    const limited = rawItins.slice(0, 2);
+
+    function decodePolyline(encoded) {
+      if (!encoded) return [];
+      let index = 0, lat = 0, lng = 0, coordinates = [];
+      const length = encoded.length;
+      while (index < length) {
+        let b, shift = 0, result = 0;
+        do { b = encoded.charCodeAt(index++) - 63; result |= (b & 0x1f) << shift; shift += 5; } while (b >= 0x20);
+        const deltaLat = ((result & 1) ? ~(result >> 1) : (result >> 1));
+        lat += deltaLat;
+        shift = 0; result = 0;
+        do { b = encoded.charCodeAt(index++) - 63; result |= (b & 0x1f) << shift; shift += 5; } while (b >= 0x20);
+        const deltaLng = ((result & 1) ? ~(result >> 1) : (result >> 1));
+        lng += deltaLng;
+        coordinates.push([lng / 1e5, lat / 1e5]);
+      }
+      return coordinates;
+    }
+
+    const itineraries = limited.map((itinerary) => {
+      const coords = [];
+      if (Array.isArray(itinerary.legs)) {
+        for (const leg of itinerary.legs) {
+            try {
+              const pts = leg.legGeometry && leg.legGeometry.points;
+              if (typeof pts === 'string' && pts.length > 0) {
+                const dec = decodePolyline(pts);
+                coords.push(...dec);
+              } else if (leg.geometry && leg.geometry.type === 'LineString' && Array.isArray(leg.geometry.coordinates)) {
+                coords.push(...leg.geometry.coordinates);
+              }
+            } catch (e) {
+              console.warn('leg decode failed', e);
+            }
+        }
+      }
+      const geo = coords.length > 0 ? { type: 'LineString', coordinates: coords } : null;
+      return {
+        duration: itinerary.duration,
+        distance: itinerary.distance,
+        startTime: itinerary.startTime,
+        endTime: itinerary.endTime,
+        walkTime: itinerary.walkTime,
+        walkDistance: itinerary.walkDistance,
+        transitTime: itinerary.transitTime,
+        transitDistance: itinerary.transitDistance,
+        waitingTime: itinerary.waitingTime,
+        transfers: itinerary.transfers,
+        legs: itinerary.legs,
+        geometry: geo,
+      };
+    });
+    // Merge cleanliness/safety scores using the standalone enricher we added.
+    try {
+      const port = process.env.PORT || 5000;
+      const enrichBody = { routes: itineraries.map(r => ({ geometry: r.geometry, legs: r.legs })) };
+      let enrichResp = null;
+      const hostsToTry = ['127.0.0.1', 'localhost'];
+      for (const h of hostsToTry) {
+        try {
+          const url = `http://${h}:${port}/api/cleanliness/enrich`;
+          enrichResp = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(enrichBody) });
+          if (enrichResp && enrichResp.ok) break;
+          // if non-ok response, keep it to log body
+          break;
+        } catch (err) {
+          console.warn('cleanliness enrich fetch to', h, 'failed:', err && err.message);
+          enrichResp = null;
+          continue;
+        }
+      }
+      if (enrichResp && enrichResp.ok) {
+        const enrJson = await enrichResp.json();
+        const enrRoutes = Array.isArray(enrJson.routes) ? enrJson.routes : [];
+        for (let i = 0; i < itineraries.length; i++) {
+          const e = enrRoutes[i] || {};
+          if (e.safetyScore != null) itineraries[i].safetyScore = e.safetyScore;
+          if (e.safetyDescription != null) itineraries[i].safetyDescription = e.safetyDescription;
+          if (e.safetyMatchedCount != null) itineraries[i].safetyMatchedCount = e.safetyMatchedCount;
+          if (e.safetyMatchedDistance != null) itineraries[i].safetyMatchedDistance = e.safetyMatchedDistance;
+        }
+      } else {
+        try { const txt = enrichResp ? await enrichResp.text() : 'no response'; console.warn('cleanliness enrich failed', txt); } catch(e) { console.warn('cleanliness enrich failed to read body', e); }
+      }
+    } catch (e) {
+      console.warn('cleanliness enrich call error', e);
+    }
+
+    // Compute a combined `yourScore` for each itinerary considering speed, cost, foot traffic, cleanliness.
+    try {
+      // collect durations and numeric costs for normalization
+      const durations = itineraries.map(r => (r.duration != null ? Number(r.duration) : null)).filter(x => x != null);
+      const mins = durations.length > 0 ? Math.min(...durations) : null;
+      const maxs = durations.length > 0 ? Math.max(...durations) : null;
+
+      // extract numeric cost if present (rideshareEstimate like '$12.34') or default transit fare
+      const costs = itineraries.map(r => {
+        if (r.rideshareEstimate && typeof r.rideshareEstimate === 'string') {
+          const m = r.rideshareEstimate.match(/\$\s*([0-9]+(?:\.[0-9]+)?)/);
+          if (m) return Number(m[1]);
+        }
+        // transit default: if there's transitTime or transitDistance, estimate $2.5
+        if ((r.transitTime || r.transitDistance) && Number(r.transitTime || 0) > 0) return 2.5;
+        return null;
+      }).filter(x => x != null);
+      const minCost = costs.length > 0 ? Math.min(...costs) : null;
+      const maxCost = costs.length > 0 ? Math.max(...costs) : null;
+
+      for (const r of itineraries) {
+        try {
+          // speedScore: shorter duration -> higher score
+          let speedScore = 0.5;
+          if (r.duration != null && mins != null && maxs != null && maxs > mins) {
+            const dur = Number(r.duration);
+            speedScore = 1 - ((dur - mins) / (maxs - mins));
+            speedScore = Math.max(0, Math.min(1, speedScore));
+          } else if (r.duration != null) speedScore = 1; // only one route
+
+          // costScore: lower cost -> higher score
+          let costScore = 1;
+          let costVal = null;
+          if (r.rideshareEstimate && typeof r.rideshareEstimate === 'string') {
+            const m = r.rideshareEstimate.match(/\$\s*([0-9]+(?:\.[0-9]+)?)/);
+            if (m) costVal = Number(m[1]);
+          } else if ((r.transitTime || r.transitDistance) && Number(r.transitTime || 0) > 0) {
+            costVal = 2.5; // default transit fare
+          }
+          if (costVal != null && minCost != null && maxCost != null && maxCost > minCost) {
+            costScore = 1 - ((costVal - minCost) / (maxCost - minCost));
+            costScore = Math.max(0, Math.min(1, costScore));
+          } else if (costVal != null) costScore = 1;
+
+          // foot traffic: favor routes with more foot traffic (use 0.5 default)
+          const foot = (r.footTrafficScore != null && !isNaN(Number(r.footTrafficScore))) ? Number(r.footTrafficScore) : 0.5;
+
+          // cleanliness / safety: favor higher safetyScore (0..1), 0.5 default
+          const clean = (r.safetyScore != null && !isNaN(Number(r.safetyScore))) ? Number(r.safetyScore) : 0.5;
+
+          // weights: speed 0.35, cost 0.2, foot traffic 0.15, cleanliness 0.15, crime 0.15
+          const crimeComp = (r.crimeScore != null && !isNaN(Number(r.crimeScore))) ? Number(r.crimeScore) : 0.5;
+          const yourScore = Math.max(0, Math.min(1, (speedScore * 0.35) + (costScore * 0.2) + (foot * 0.15) + (clean * 0.15) + (crimeComp * 0.15)));
+          r.yourScore = Math.round(yourScore * 1000) / 1000;
+          r.yourScoreComponents = { speedScore: Math.round(speedScore*1000)/1000, costScore: Math.round(costScore*1000)/1000, footTrafficScore: Math.round(foot*1000)/1000, cleanlinessScore: Math.round(clean*1000)/1000, crimeScore: Math.round(crimeComp*1000)/1000 };
+        } catch (e) {
+          r.yourScore = null;
+        }
+      }
+    } catch (e) {
+      console.warn('failed to compute yourScore for bus itineraries', e);
+    }
+
+    // Compute crime aggregation for each itinerary (ensure numeric fields are present)
+    try {
+      async function loadCrimePointsLocal() {
         try {
           if (mongoose && mongoose.connection && mongoose.connection.readyState === 1) {
             const coll = mongoose.connection.collection('annotatedcrime');
             if (coll) {
-              try {
-                const docs = await coll.find({}).project({ latitude: 1, LATITUDE: 1, lat: 1, longitude: 1, LONGITUDE: 1, lon: 1, severity: 1, Severity: 1, CrimeSeverity: 1 }).toArray();
-                const pts = [];
-                for (const d of docs) {
-                  let lat = null, lon = null, sev = null;
-                  if (d.latitude != null) lat = Number(d.latitude);
-                  else if (d.LATITUDE != null) lat = Number(d.LATITUDE);
-                  else if (d.lat != null) lat = Number(d.lat);
-                  if (d.longitude != null) lon = Number(d.longitude);
-                  else if (d.LONGITUDE != null) lon = Number(d.LONGITUDE);
-                  else if (d.lon != null) lon = Number(d.lon);
-                  if (d.severity != null) sev = Number(d.severity);
-                  else if (d.Severity != null) sev = Number(d.Severity);
-                  else if (d.CrimeSeverity != null) sev = Number(d.CrimeSeverity);
-                  if (lat != null && lon != null && !isNaN(lat) && !isNaN(lon) && sev != null && !isNaN(sev)) pts.push({ lat, lon, severity: sev });
-                }
-                if (pts.length > 0) { crimePointsCache = pts; return crimePointsCache; }
-              } catch (e) {
-                // fall through to CSV parsing
+              const docs = await coll.find({}).project({ latitude: 1, LATITUDE: 1, lat: 1, longitude: 1, LONGITUDE: 1, lon: 1, severity: 1, Severity: 1, CrimeSeverity: 1 }).toArray();
+              const out = [];
+              for (const d of docs) {
+                let lat = null, lon = null, sev = null;
+                if (d.latitude != null) lat = Number(d.latitude);
+                else if (d.LATITUDE != null) lat = Number(d.LATITUDE);
+                else if (d.lat != null) lat = Number(d.lat);
+                if (d.longitude != null) lon = Number(d.longitude);
+                else if (d.LONGITUDE != null) lon = Number(d.LONGITUDE);
+                else if (d.lon != null) lon = Number(d.lon);
+                if (d.severity != null) sev = Number(d.severity);
+                else if (d.Severity != null) sev = Number(d.Severity);
+                else if (d.CrimeSeverity != null) sev = Number(d.CrimeSeverity);
+                if (lat != null && lon != null && !isNaN(lat) && !isNaN(lon) && sev != null && !isNaN(sev)) out.push({ lat, lon, severity: sev });
               }
+              if (out.length > 0) return out;
             }
           }
-        } catch (e) {
-          // ignore
-        }
-
-        // Fallback: parse CSV file in repo at mongodb/annotatedcrime.csv
+        } catch (e) {}
         try {
-          const fs = require('fs');
-          const path = require('path');
-          const csvPath = path.join(__dirname, '..', '..', 'mongodb', 'annotatedcrime.csv');
-          if (fs.existsSync(csvPath)) {
+          const fs = require('fs'); const path = require('path');
+          const candidates = [
+            path.join(__dirname, '..', '..', 'annotatedcrime.csv'),
+            path.join(__dirname, '..', '..', 'mongodb', 'annotatedcrime.csv'),
+            path.join(__dirname, '..', '..', 'data', 'annotatedcrime.csv')
+          ];
+          let csvPath = null;
+          for (const c of candidates) { if (fs.existsSync(c)) { csvPath = c; break; } }
+          if (csvPath) {
             const data = fs.readFileSync(csvPath, 'utf8');
             const lines = data.split(/\r?\n/).filter(l => l.trim().length > 0);
-            const pts = [];
+            const out = [];
             for (const line of lines) {
-              // CSV may contain commas inside quoted fields; do a simple split from the end
               const parts = line.split(',');
               if (parts.length < 3) continue;
-              // last value is severity, two before are lat, lon (per user's note)
               const severityRaw = parts[parts.length - 1];
               const latRaw = parts[parts.length - 3];
               const lonRaw = parts[parts.length - 2];
               const lat = Number((latRaw || '').trim());
               const lon = Number((lonRaw || '').trim());
               const sev = Number((severityRaw || '').trim());
-              if (!isNaN(lat) && !isNaN(lon) && !isNaN(sev)) pts.push({ lat, lon, severity: sev });
+              if (!isNaN(lat) && !isNaN(lon) && !isNaN(sev)) out.push({ lat, lon, severity: sev });
             }
-            crimePointsCache = pts;
-            return crimePointsCache;
+            return out;
           }
-        } catch (e) {
-          // ignore
-        }
-        crimePointsCache = [];
-        return crimePointsCache;
+        } catch (e) {}
+        return [];
       }
 
-      // Given a route (coords array of [lon,lat]), sum severity of crimes near the route.
-      // We'll count a crime if it's within CRIME_BUFFER_METERS of any segment midpoint.
-      function pointDistanceMeters(lat1, lon1, lat2, lon2) {
+      const pts = await loadCrimePointsLocal();
+      function ptDist(lat1, lon1, lat2, lon2) {
         const toRad = (v) => (v * Math.PI) / 180;
         const R = 6371;
         const dLat = toRad(lat2 - lat1);
@@ -81,267 +270,108 @@ exports.busDirections = async (req, res) => {
         return R * c * 1000;
       }
 
-      async function computeCrimeForRoute(coords) {
-        const pts = await loadCrimePoints();
-        if (!Array.isArray(coords) || coords.length < 2) return { crimeTotal: 0, crimePerMile: 0, crimeScore: null };
-        const CRIME_BUFFER_METERS = 50; // count crimes within 50m of route
-        // build segment midpoints
-        const mids = [];
-        let totalMeters = 0;
-        for (let i = 0; i < coords.length - 1; i++) {
-          const a = coords[i]; const b = coords[i+1];
-          const lat1 = a[1], lon1 = a[0], lat2 = b[1], lon2 = b[0];
-          const segLen = pointDistanceMeters(lat1, lon1, lat2, lon2);
-          totalMeters += segLen;
-          const mx = (lat1 + lat2) / 2; const my = (lon1 + lon2) / 2; // note: lat, lon order for distance
-          mids.push({ lat: mx, lon: my, segLen });
-        }
-        if (pts.length === 0) return { crimeTotal: 0, crimePerMile: 0, crimeScore: null };
-        // Sum severity for crimes within buffer of any midpoint
-        let crimeSum = 0;
-        for (const c of pts) {
-          try {
-            for (const m of mids) {
-              const d = pointDistanceMeters(c.lat, c.lon, m.lat, m.lon);
-              if (d <= CRIME_BUFFER_METERS) { crimeSum += Number(c.severity || 0); break; }
-            }
-          } catch (e) { }
-        }
-        const miles = totalMeters > 0 ? (totalMeters / 1609.344) : 0;
-        const crimePerMile = miles > 0 ? (crimeSum / miles) : 0;
-        // Normalize into 0..1 where 1 is best (low crime). We'll use a scale where >=50 severity/mile -> worst (0)
-        let crimeScore = null;
-        if (miles > 0) {
-          const capped = Math.max(0, Math.min(1, crimePerMile / 50));
-          crimeScore = Math.round((1 - capped) * 1000) / 1000;
-        }
-        return { crimeTotal: Math.round(crimeSum), crimePerMile: Math.round(crimePerMile * 1000) / 1000, crimeScore };
-      }
-
-          const routeLine = { type: 'LineString', coordinates: coords };
-          let found = null;
-          try { found = await StreetCleanlinessLocal.findOne({ geometry: { $geoIntersects: { $geometry: routeLine } } }).lean(); } catch (e) { found = null; }
-          if (!found) {
-            // try nearest to midpoint
-            try {
-              const mid = coords[Math.floor(coords.length / 2)];
-              const pt = { type: 'Point', coordinates: [mid[0], mid[1]] };
-              found = await StreetCleanlinessLocal.findOne({ geometry: { $nearSphere: { $geometry: pt, $maxDistance: 5000 } } }).lean();
-            } catch (e) { found = null; }
+      for (const itin of itineraries) {
+        try {
+          let coords = [];
+          if (itin.geometry && Array.isArray(itin.geometry.coordinates)) coords = itin.geometry.coordinates;
+          if (!coords || coords.length < 2) {
+            itin.crimeTotal = 0;
+            itin.crimePerMile = 0;
+            itin.crimeScore = 1;
+            continue;
           }
-
-          let sVal = null; let rawCSGrade = null;
-          if (found) {
-            try {
-              const p = found.properties || {};
-              let sRaw = null; let usedKey = null;
-              if (typeof p.score === 'number') { sRaw = p.score; usedKey = 'score'; }
-              else if (p.CSGrade != null) { sRaw = p.CSGrade; usedKey = 'CSGrade'; }
-              else if (p.CSRoundSco != null) { sRaw = p.CSRoundSco; usedKey = 'CSRoundSco'; }
-              else if (p.CSscor != null) { sRaw = p.CSscor; usedKey = 'CSscor'; }
-              else if (p.CSRoundScore != null) { sRaw = p.CSRoundScore; usedKey = 'CSRoundScore'; }
-              else if (p.cleanliness != null) { sRaw = p.cleanliness; usedKey = 'cleanliness'; }
-              else if (p.value != null) { sRaw = p.value; usedKey = 'value'; }
-              else if (p.raw) {
-                const raw = p.raw || {};
-                if (raw.CSGrade != null) { sRaw = raw.CSGrade; usedKey = 'CSGrade'; }
-                else if (raw.CSRoundSco != null) { sRaw = raw.CSRoundSco; usedKey = 'CSRoundSco'; }
-                else if (raw.CSscor != null) { sRaw = raw.CSscor; usedKey = 'CSscor'; }
-                else if (raw.CSRoundScore != null) { sRaw = raw.CSRoundScore; usedKey = 'CSRoundScore'; }
-                else if (raw.score != null) { sRaw = raw.score; usedKey = 'score'; }
-                else if (raw.cleanliness != null) { sRaw = raw.cleanliness; usedKey = 'cleanliness'; }
-                else if (raw.value != null) { sRaw = raw.value; usedKey = 'value'; }
-              }
-              if (sRaw != null && !isNaN(Number(sRaw))) {
-                const num = Number(sRaw);
-                let treatAsCSGrade = false;
-                if (usedKey === 'CSGrade') treatAsCSGrade = true;
-                else if (usedKey === 'cleanliness' || usedKey === 'CSRoundSco' || usedKey === 'CSRoundScore' || usedKey === 'CSscor') {
-                  if (Number.isInteger(num) && num >= 1 && num <= 3) treatAsCSGrade = true;
-                } else if (Number.isInteger(num) && num >= 1 && num <= 3) treatAsCSGrade = true;
-
-                if (treatAsCSGrade) {
-                  const minG = 1.0; const maxG = 3.0;
-                  const recip = 1 / Math.max(0.0001, num);
-                  const minRecip = 1 / maxG; const maxRecip = 1 / minG;
-                  const norm = (recip - minRecip) / Math.max(1e-6, (maxRecip - minRecip));
-                  sVal = norm * 100; rawCSGrade = num;
-                } else { sVal = num; }
-              }
-            } catch (e) { /* ignore */ }
+          let totalMeters2 = 0;
+          const mids2 = [];
+          for (let i = 0; i < coords.length - 1; i++) {
+            const a = coords[i]; const b = coords[i+1];
+            const lat1 = a[1], lon1 = a[0], lat2 = b[1], lon2 = b[0];
+            const segLen = ptDist(lat1, lon1, lat2, lon2);
+            totalMeters2 += segLen;
+            const mx = (lat1 + lat2) / 2; const my = (lon1 + lon2) / 2;
+            mids2.push({ lat: mx, lon: my, segLen });
           }
-
-          if (sVal != null) {
-            let avgByTotal = sVal; if (avgByTotal <= 1) avgByTotal = avgByTotal * 100;
-            const normalized01 = avgByTotal / 100;
-            route.safetyScore = Math.round(normalized01 * 1000) / 1000;
-            if (route.safetyScore >= 0.75) route.safetyDescription = 'clean';
-            else if (route.safetyScore >= 0.40) route.safetyDescription = 'moderate';
-            else route.safetyDescription = 'dirty';
-            route.avgStreetScore = rawCSGrade != null ? Math.round(rawCSGrade * 1000) / 1000 : null;
-          } else {
-            // Perform a per-segment nearest-neighbor fallback so we can still compute a score
-            // even when no single cleanliness feature intersects the whole route.
-            try {
-              const segments = [];
-              let totalDistance = 0;
-              for (let i = 0; i < coords.length - 1; i++) {
-                const a = coords[i]; const b = coords[i+1];
-                const segLat1 = a[1], segLon1 = a[0], segLat2 = b[1], segLon2 = b[0];
-                const toRad = (v) => (v * Math.PI) / 180;
-                const R = 6371;
-                const dLat = toRad(segLat2 - segLat1);
-                const dLon = toRad(segLon2 - segLon1);
-                const aa = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(toRad(segLat1)) * Math.cos(toRad(segLat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
-                const cc = 2 * Math.atan2(Math.sqrt(aa), Math.sqrt(1 - aa));
-                const segLen = R * cc * 1000;
-                totalDistance += segLen;
-                const mx = (a[0] + b[0]) / 2;
-                const my = (a[1] + b[1]) / 2;
-                segments.push({ a, b, mx, my, segLen });
-              }
-              let weightedSum = 0; let matchedDistance = 0; let matchCounts = 0; let sawLargeScore = false; let weightedSumCSGradeRaw = 0; let matchedDistanceCSGrade = 0;
-              for (const seg of segments) {
-                try {
-                  const pt = { type: 'Point', coordinates: [seg.mx, seg.my] };
-                  const nearDoc = await StreetCleanlinessLocal.findOne({ geometry: { $nearSphere: { $geometry: pt, $maxDistance: 20000 } } }).lean();
-                  if (!nearDoc) continue;
-                  // extract raw score
-                  let sRaw2 = null; let usedKey2 = null;
-                  if (nearDoc.properties) {
-                    const p2 = nearDoc.properties;
-                    if (typeof p2.score === 'number') { sRaw2 = p2.score; usedKey2 = 'score'; }
-                    else if (p2.CSGrade != null) { sRaw2 = p2.CSGrade; usedKey2 = 'CSGrade'; }
-                    else if (p2.CSRoundSco != null) { sRaw2 = p2.CSRoundSco; usedKey2 = 'CSRoundSco'; }
-                    else if (p2.CSscor != null) { sRaw2 = p2.CSscor; usedKey2 = 'CSscor'; }
-                    else if (p2.CSRoundScore != null) { sRaw2 = p2.CSRoundScore; usedKey2 = 'CSRoundScore'; }
-                    else if (p2.cleanliness != null) { sRaw2 = p2.cleanliness; usedKey2 = 'cleanliness'; }
-                    else if (p2.value != null) { sRaw2 = p2.value; usedKey2 = 'value'; }
-                    else if (p2.raw) {
-                      const raw2 = p2.raw || {};
-                      if (raw2.CSGrade != null) { sRaw2 = raw2.CSGrade; usedKey2 = 'CSGrade'; }
-                      else if (raw2.CSRoundSco != null) { sRaw2 = raw2.CSRoundSco; usedKey2 = 'CSRoundSco'; }
-                      else if (raw2.CSscor != null) { sRaw2 = raw2.CSscor; usedKey2 = 'CSscor'; }
-                      else if (raw2.CSRoundScore != null) { sRaw2 = raw2.CSRoundScore; usedKey2 = 'CSRoundScore'; }
-                      else if (raw2.score != null) { sRaw2 = raw2.score; usedKey2 = 'score'; }
-                      else if (raw2.cleanliness != null) { sRaw2 = raw2.cleanliness; usedKey2 = 'cleanliness'; }
-                      else if (raw2.value != null) { sRaw2 = raw2.value; usedKey2 = 'value'; }
-                    }
-                  }
-                  if (sRaw2 == null || isNaN(Number(sRaw2))) continue;
-                  let s2 = null; const num2 = Number(sRaw2);
-                  let treatAsCSGrade2 = false;
-                  if (usedKey2 === 'CSGrade') treatAsCSGrade2 = true;
-                  else if (usedKey2 === 'cleanliness' || usedKey2 === 'CSRoundSco' || usedKey2 === 'CSRoundScore' || usedKey2 === 'CSscor') {
-                    if (Number.isInteger(num2) && num2 >= 1 && num2 <= 3) treatAsCSGrade2 = true;
-                  } else if (Number.isInteger(num2) && num2 >= 1 && num2 <= 3) treatAsCSGrade2 = true;
-                  if (treatAsCSGrade2) {
-                    const minG = 1.0; const maxG = 3.0;
-                    const recip = 1 / Math.max(0.0001, num2);
-                    const minRecip = 1 / maxG; const maxRecip = 1 / minG;
-                    const norm = (recip - minRecip) / Math.max(1e-6, (maxRecip - minRecip));
-                    s2 = norm * 100;
-                  } else { s2 = num2; }
-                  // distance penalty: approximate direct distance between seg midpoint and doc first coord
-                  let penalty = 1;
-                  try {
-                    let docCoord = null;
-                    if (nearDoc.geometry && nearDoc.geometry.type === 'LineString' && Array.isArray(nearDoc.geometry.coordinates) && nearDoc.geometry.coordinates.length > 0) docCoord = nearDoc.geometry.coordinates[0];
-                    else if (nearDoc.geometry && nearDoc.geometry.type === 'Point') docCoord = nearDoc.geometry.coordinates;
-                    if (docCoord) {
-                      const segDist = distanceMeters(seg.my, seg.mx, docCoord[1], docCoord[0]);
-                      penalty = 1 / (1 + (segDist / 1000));
-                    }
-                  } catch (e) { penalty = 1; }
-                  weightedSum += s2 * seg.segLen * penalty;
-                  matchedDistance += seg.segLen * penalty;
-                  matchCounts += 1;
-                  if (usedKey2 === 'CSGrade') { weightedSumCSGradeRaw += num2 * seg.segLen * penalty; matchedDistanceCSGrade += seg.segLen * penalty; }
-                  if (typeof s2 === 'number' && s2 > 10) sawLargeScore = true;
-                } catch (e) {
-                  // ignore per-seg failures
-                }
-              }
-              if (!sawLargeScore && matchedDistance > 0) {
-                weightedSum = weightedSum * 100;
-              }
-              if (matchedDistance > 0 && totalDistance > 0) {
-                const avgByTotal2 = weightedSum / totalDistance;
-                const normalized012 = avgByTotal2 / 100;
-                route.safetyScore = Math.round(normalized012 * 1000) / 1000;
-                if (route.safetyScore >= 0.75) route.safetyDescription = 'clean';
-                else if (route.safetyScore >= 0.40) route.safetyDescription = 'moderate';
-                else route.safetyDescription = 'dirty';
-                if (matchedDistanceCSGrade > 0) route.avgStreetScore = Math.round((weightedSumCSGradeRaw / matchedDistanceCSGrade) * 1000) / 1000;
-                else route.avgStreetScore = null;
-              } else {
-                route.safetyScore = null; route.safetyDescription = 'unknown'; route.avgStreetScore = null;
-              }
-            } catch (e) {
-              route.safetyScore = null; route.safetyDescription = 'unknown'; route.avgStreetScore = null;
+          let crimeSum2 = 0;
+          const BUF = 50;
+          for (const c of pts) {
+            for (const m of mids2) {
+              const d = ptDist(c.lat, c.lon, m.lat, m.lon);
+              if (d <= BUF) { crimeSum2 += Number(c.severity || 0); break; }
             }
           }
-
-          // foot traffic
-          try {
-            let pedSum = 0;
-            if (mongooseLocal && mongooseLocal.connection && mongooseLocal.connection.readyState === 1) {
-              const coll = mongooseLocal.connection.collection('foottraffic');
-              if (coll) {
-                const matches = await coll.find({ geometry: { $geoIntersects: { $geometry: routeLine } } }).project({ Ped_Total: 1, PedTotal: 1, ped_total: 1, pedTotal: 1 }).toArray();
-                if (Array.isArray(matches) && matches.length > 0) {
-                  for (const m of matches) {
-                    let v = null;
-                    if (m.Ped_Total != null) v = m.Ped_Total;
-                    else if (m.PedTotal != null) v = m.PedTotal;
-                    else if (m.ped_total != null) v = m.ped_total;
-                    else if (m.pedTotal != null) v = m.pedTotal;
-                    if (v == null) continue;
-                    if (typeof v === 'string') v = v.replace(/,/g, '');
-                    const n = Number(v); if (!isNaN(n)) pedSum += n;
-                  }
-                }
-              }
-            }
-            route.pedestrianTotal = Math.round(pedSum);
-            // approximate route length
-            let totalMeters = 0;
-            for (let i = 0; i < coords.length - 1; i++) {
-              const a = coords[i]; const b = coords[i+1];
-              const lat1 = a[1], lon1 = a[0], lat2 = b[1], lon2 = b[0];
-              const toRad = (v) => (v * Math.PI) / 180;
-              const R = 6371;
-              const dLat = toRad(lat2 - lat1); const dLon = toRad(lon2 - lon1);
-              const aa = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
-              const cc = 2 * Math.atan2(Math.sqrt(aa), Math.sqrt(1 - aa));
-              totalMeters += R * cc * 1000;
-            }
-            const milesVal = totalMeters > 0 ? (totalMeters / 1609.344) : 0;
-            if (milesVal > 0) {
-              const pedPerQuarter = (route.pedestrianTotal * 0.25) / milesVal;
-              const normalized = Math.max(0, Math.min(1, pedPerQuarter / 20));
-              route.footTrafficScore = Math.round(normalized * 1000) / 1000;
-              route.pedestrianPerQuarterMile = Math.round(pedPerQuarter * 1000) / 1000;
-            } else { route.footTrafficScore = null; route.pedestrianPerQuarterMile = null; }
-          } catch (e) { route.pedestrianTotal = null; route.footTrafficScore = null; route.pedestrianPerQuarterMile = null; }
-
-          // Crime aggregation: attach crimeTotal, crimePerMile, crimeScore to route
-          try {
-            const crimeRes = await computeCrimeForRoute(coords);
-            route.crimeTotal = crimeRes.crimeTotal;
-            route.crimePerMile = crimeRes.crimePerMile;
-            route.crimeScore = crimeRes.crimeScore; // 0..1 where 1 is best (low crime)
-          } catch (e) {
-            route.crimeTotal = null; route.crimePerMile = null; route.crimeScore = null;
+          const miles2 = totalMeters2 > 0 ? (totalMeters2 / 1609.344) : 0;
+          const denomMiles2 = Math.max(miles2, 0.1); // avoid huge per-mile values for very short routes
+          const crimePerMile2 = crimeSum2 / denomMiles2;
+          let crimeScore2 = null;
+          if (miles2 > 0) {
+            // Use a log-compressed inverse mapping for better sensitivity across large ranges.
+            // crimeScore = 1 / (1 + (log(1+crimePerMile) / k)).
+            const k = 5; // sensitivity parameter (larger -> less harsh)
+            const transformed = Math.log(1 + crimePerMile2);
+            crimeScore2 = Math.round((1 / (1 + (transformed / k))) * 1000) / 1000;
           }
-
+          itin.crimeTotal = Math.round(crimeSum2);
+          itin.crimePerMile = Math.round(crimePerMile2 * 1000) / 1000;
+          itin.crimeScore = crimeScore2;
         } catch (e) {
-          route.safetyScore = null; route.safetyDescription = 'unknown'; route.avgStreetScore = null;
-          route.pedestrianTotal = null; route.footTrafficScore = null; route.pedestrianPerQuarterMile = null;
+          itin.crimeTotal = 0; itin.crimePerMile = 0; itin.crimeScore = 1;
         }
       }
     } catch (e) {
-      console.warn('Failed to compute bus route safety/foot-traffic', e);
+      console.warn('failed to compute crime for bus itineraries', e);
+    }
+
+    // Recompute combined yourScore to include crime now that crime fields exist
+    try {
+      const routes = itineraries;
+      const durations = routes.map(r => (r.duration != null ? Number(r.duration) : null)).filter(x => x != null);
+      const mins = durations.length > 0 ? Math.min(...durations) : null;
+      const maxs = durations.length > 0 ? Math.max(...durations) : null;
+      const costs = routes.map(r => {
+        if (r.rideshareEstimate && typeof r.rideshareEstimate === 'string') {
+          const m = r.rideshareEstimate.match(/\$\s*([0-9]+(?:\.[0-9]+)?)/);
+          if (m) return Number(m[1]);
+        }
+        if ((r.transitTime || r.transitDistance) && Number(r.transitTime || 0) > 0) return 2.5;
+        return null;
+      }).filter(x => x != null);
+      const minCost = costs.length > 0 ? Math.min(...costs) : null;
+      const maxCost = costs.length > 0 ? Math.max(...costs) : null;
+
+      for (const r of routes) {
+        try {
+          let speedScore = 0.5;
+          if (r.duration != null && mins != null && maxs != null && maxs > mins) {
+            const dur = Number(r.duration);
+            speedScore = 1 - ((dur - mins) / (maxs - mins));
+            speedScore = Math.max(0, Math.min(1, speedScore));
+          } else if (r.duration != null) speedScore = 1;
+
+          let costScore = 1;
+          let costVal = null;
+          if (r.rideshareEstimate && typeof r.rideshareEstimate === 'string') {
+            const m = r.rideshareEstimate.match(/\$\s*([0-9]+(?:\.[0-9]+)?)/);
+            if (m) costVal = Number(m[1]);
+          } else if ((r.transitTime || r.transitDistance) && Number(r.transitTime || 0) > 0) {
+            costVal = 2.5;
+          }
+          if (costVal != null && minCost != null && maxCost != null && maxCost > minCost) {
+            costScore = 1 - ((costVal - minCost) / (maxCost - minCost));
+            costScore = Math.max(0, Math.min(1, costScore));
+          } else if (costVal != null) costScore = 1;
+
+          const foot = (r.pedestrianPerQuarterMile != null && !isNaN(Number(r.pedestrianPerQuarterMile))) ? r.footTrafficScore || 0.5 : (r.footTrafficScore != null ? Number(r.footTrafficScore) : 0.5);
+          const clean = (r.safetyScore != null && !isNaN(Number(r.safetyScore))) ? Number(r.safetyScore) : 0.5;
+          const crimeComp = (r.crimeScore != null && !isNaN(Number(r.crimeScore))) ? Number(r.crimeScore) : 0.5;
+
+          const yourScore = Math.max(0, Math.min(1, (speedScore * 0.35) + (costScore * 0.2) + (foot * 0.15) + (clean * 0.15) + (crimeComp * 0.15)));
+          r.yourScore = Math.round(yourScore * 1000) / 1000;
+          r.yourScoreComponents = { speedScore: Math.round(speedScore*1000)/1000, costScore: Math.round(costScore*1000)/1000, footTrafficScore: Math.round((foot||0)*1000)/1000, cleanlinessScore: Math.round((clean||0)*1000)/1000, crimeScore: Math.round(crimeComp*1000)/1000 };
+        } catch (e) {
+          r.yourScore = null;
+        }
+      }
+    } catch (e) {
+      console.warn('failed to recompute yourScore for bus itineraries with crime', e);
     }
 
     res.json({ routes: itineraries });
@@ -1209,8 +1239,14 @@ exports.directions = async (req, res) => {
                   // fallback CSV parse
                   try {
                     const fs = require('fs'); const path = require('path');
-                    const csvPath = path.join(__dirname, '..', '..', 'mongodb', 'annotatedcrime.csv');
-                    if (fs.existsSync(csvPath)) {
+                    const candidates = [
+                      path.join(__dirname, '..', '..', 'annotatedcrime.csv'),
+                      path.join(__dirname, '..', '..', 'mongodb', 'annotatedcrime.csv'),
+                      path.join(__dirname, '..', '..', 'data', 'annotatedcrime.csv')
+                    ];
+                    let csvPath = null;
+                    for (const c of candidates) { if (fs.existsSync(c)) { csvPath = c; break; } }
+                    if (csvPath) {
                       const data = fs.readFileSync(csvPath, 'utf8');
                       const lines = data.split(/\r?\n/).filter(l => l.trim().length > 0);
                       const out = [];
@@ -1261,11 +1297,13 @@ exports.directions = async (req, res) => {
                   }
                 }
                 const miles2 = totalMeters2 > 0 ? (totalMeters2 / 1609.344) : 0;
-                const crimePerMile2 = miles2 > 0 ? (crimeSum2 / miles2) : 0;
+                const denomMiles2 = Math.max(miles2, 0.1); // avoid huge per-mile values for very short routes
+                const crimePerMile2 = crimeSum2 / denomMiles2;
                 let crimeScore2 = null;
                 if (miles2 > 0) {
-                  const capped = Math.max(0, Math.min(1, crimePerMile2 / 50));
-                  crimeScore2 = Math.round((1 - capped) * 1000) / 1000;
+                  const k = 5;
+                  const transformed = Math.log(1 + crimePerMile2);
+                  crimeScore2 = Math.round((1 / (1 + (transformed / k))) * 1000) / 1000;
                 }
                 route.crimeTotal = Math.round(crimeSum2);
                 route.crimePerMile = Math.round(crimePerMile2 * 1000) / 1000;
@@ -1284,6 +1322,58 @@ exports.directions = async (req, res) => {
       }
     } catch (e) {
       console.warn('Error computing route safety', e);
+    }
+
+    // Compute combined `yourScore` for all returned routes (driving/walking) based on speed, cost, foot traffic, cleanliness
+    try {
+      const routes = results;
+      const durations = routes.map(r => (r.duration != null ? Number(r.duration) : null)).filter(x => x != null);
+      const minDur = durations.length > 0 ? Math.min(...durations) : null;
+      const maxDur = durations.length > 0 ? Math.max(...durations) : null;
+
+      const costsArr = routes.map(r => {
+        if (r.rideshareEstimate && typeof r.rideshareEstimate === 'string') {
+          const m = r.rideshareEstimate.match(/\$\s*([0-9]+(?:\.[0-9]+)?)/);
+          if (m) return Number(m[1]);
+        }
+        return null;
+      }).filter(x => x != null);
+      const minCost = costsArr.length > 0 ? Math.min(...costsArr) : null;
+      const maxCost = costsArr.length > 0 ? Math.max(...costsArr) : null;
+
+      for (const r of routes) {
+        try {
+          let speedScore = 0.5;
+          if (r.duration != null && minDur != null && maxDur != null && maxDur > minDur) {
+            const dur = Number(r.duration);
+            speedScore = 1 - ((dur - minDur) / (maxDur - minDur));
+            speedScore = Math.max(0, Math.min(1, speedScore));
+          } else if (r.duration != null) speedScore = 1;
+
+          let costScore = 1;
+          if (r.rideshareEstimate && typeof r.rideshareEstimate === 'string') {
+            const m = r.rideshareEstimate.match(/\$\s*([0-9]+(?:\.[0-9]+)?)/);
+            if (m) {
+              const c = Number(m[1]);
+              if (minCost != null && maxCost != null && maxCost > minCost) {
+                costScore = 1 - ((c - minCost) / (maxCost - minCost));
+                costScore = Math.max(0, Math.min(1, costScore));
+              } else costScore = 1;
+            }
+          }
+
+          const foot = (r.footTrafficScore != null && !isNaN(Number(r.footTrafficScore))) ? Number(r.footTrafficScore) : 0.5;
+          const clean = (r.safetyScore != null && !isNaN(Number(r.safetyScore))) ? Number(r.safetyScore) : 0.5;
+
+          const yourScore = Math.max(0, Math.min(1, (speedScore * 0.4) + (costScore * 0.2) + (foot * 0.2) + (clean * 0.2)));
+          r.yourScore = Math.round(yourScore * 1000) / 1000;
+          r.yourScoreComponents = { speedScore: Math.round(speedScore*1000)/1000, costScore: Math.round(costScore*1000)/1000, footTrafficScore: Math.round(foot*1000)/1000, cleanlinessScore: Math.round(clean*1000)/1000 };
+        } catch (e) {
+          r.yourScore = null;
+        }
+      }
+    } catch (e) {
+      console.warn('failed to compute yourScore for directions', e);
     }
 
     res.json({ routes: results, mapImage: mapImageDataUrl });
