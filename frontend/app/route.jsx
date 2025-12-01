@@ -458,8 +458,9 @@ export default function RouteScreen() {
     const costW_final = Math.max(0, Math.min(Number(userCostPref || 10), 20)) / 20;
     const crimeW_final = Math.max(0, Math.min(Number(userCrimePref || 10), 20)) / 20;
     let finalScore = null;
-    // Include crimeScore when present as an additional dimension (higher is better)
+    // Include crimeScore and lighting when present as additional dimensions (higher is better)
     const crimeScoreVal = route.crimeScore != null ? Number(route.crimeScore) : null;
+    const lightingScoreVal = route.lightingScore != null ? Number(route.lightingScore) : null;
     // Build arrays for available scores and weights to compute weighted average robustly
     const components = [];
     const weights = [];
@@ -467,6 +468,9 @@ export default function RouteScreen() {
     if (speedScore != null) { components.push(speedScore); weights.push(speedW_final); }
     if (costScore != null) { components.push(costScore); weights.push(costW_final); }
     if (crimeScoreVal != null) { components.push(crimeScoreVal); weights.push(crimeW_final); }
+    // lighting has a small default weight (0.1); include when present
+    const lightingW_final = 0.1;
+    if (lightingScoreVal != null) { components.push(lightingScoreVal); weights.push(lightingW_final); }
     const totalW = weights.reduce((s, v) => s + v, 0);
     if (components.length > 0 && totalW > 0) {
       let numer = 0;
@@ -726,8 +730,17 @@ export default function RouteScreen() {
               else if (safetyCombined != null) otherCombined = safetyCombined;
               else if (speedScore != null) otherCombined = speedScore;
 
-              if (otherCombined != null) {
-                rideshareYourScore = (costPref * costScore) + ((1 - costPref) * otherCombined);
+              // incorporate lighting into rideshare score with a small default weight
+              const lightingScoreItem = item.lightingScore != null ? Number(item.lightingScore) : null;
+              const lightingW = 0.1;
+              let otherWithLighting = otherCombined;
+              if (lightingScoreItem != null) {
+                if (otherCombined != null) otherWithLighting = ((1 - lightingW) * otherCombined) + (lightingW * lightingScoreItem);
+                else otherWithLighting = lightingScoreItem;
+              }
+
+              if (otherWithLighting != null) {
+                rideshareYourScore = (costPref * costScore) + ((1 - costPref) * otherWithLighting);
               } else {
                 rideshareYourScore = costScore;
               }
@@ -759,6 +772,7 @@ export default function RouteScreen() {
                         </Text>
                         <Text style={{ color: colors.textMuted, marginTop: 4 }}>Cleanliness: {safetyDisplay} {item.safetyDescription ? '• ' + item.safetyDescription : ''}</Text>
                         <Text style={{ color: colors.textMuted, marginTop: 4 }}>Crime: {item.crimeTotal != null ? item.crimeTotal : '—'} • score: {item.crimeScore != null ? Number(item.crimeScore).toFixed(3) : '—'}</Text>
+                        <Text style={{ color: colors.textMuted, marginTop: 4 }}>Lighting: {item.lampCount != null ? item.lampCount : '—'} • /qmi: {item.lampsPerQuarter != null ? Number(item.lampsPerQuarter).toFixed(3) : '—'}</Text>
                         {yourScore != null && (
                           <Text style={{ color: colors.textMuted, marginTop: 4 }}>Your Score: {Number(yourScore).toFixed(3)}</Text>
                         )}
@@ -773,6 +787,7 @@ export default function RouteScreen() {
                         </Text>
                         <Text style={{ color: colors.textMuted, marginTop: 4 }}>Cleanliness: {safetyDisplay} {item.safetyDescription ? '• ' + item.safetyDescription : ''}</Text>
                           <Text style={{ color: colors.textMuted, marginTop: 4 }}>Crime: {item.crimeTotal != null ? item.crimeTotal : '—'} • score: {item.crimeScore != null ? Number(item.crimeScore).toFixed(3) : '—'}</Text>
+                          <Text style={{ color: colors.textMuted, marginTop: 4 }}>Lighting: {item.lampCount != null ? item.lampCount : '—'} • /qmi: {item.lampsPerQuarter != null ? Number(item.lampsPerQuarter).toFixed(3) : '—'}</Text>
                         {yourScore != null && (
                           <Text style={{ color: colors.textMuted, marginTop: 4 }}>Your Score: {Number(yourScore).toFixed(3)}</Text>
                         )}
@@ -788,6 +803,7 @@ export default function RouteScreen() {
                         </Text>
                         <Text style={{ color: colors.textMuted, marginTop: 4 }}>Cleanliness: {safetyDisplay} {item.safetyDescription ? '• ' + item.safetyDescription : ''}</Text>
                           <Text style={{ color: colors.textMuted, marginTop: 4 }}>Crime: {item.crimeTotal != null ? item.crimeTotal : '—'} • score: {item.crimeScore != null ? Number(item.crimeScore).toFixed(3) : '—'}</Text>
+                        <Text style={{ color: colors.textMuted, marginTop: 4 }}>Lighting: {item.lampCount != null ? item.lampCount : '—'} • /qmi: {item.lampsPerQuarter != null ? Number(item.lampsPerQuarter).toFixed(3) : '—'}</Text>
                         <Text style={{ color: colors.textMuted, marginTop: 4 }}>Your Score: {rideshareYourScore != null ? Number(rideshareYourScore).toFixed(3) : '—'}</Text>
                       </View>
                     )}
