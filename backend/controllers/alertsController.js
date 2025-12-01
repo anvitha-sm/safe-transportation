@@ -190,11 +190,23 @@ exports.busDirections = async (req, res) => {
           // cleanliness / safety: favor higher safetyScore (0..1), 0.5 default
           const clean = (r.safetyScore != null && !isNaN(Number(r.safetyScore))) ? Number(r.safetyScore) : 0.5;
 
-          // weights: speed 0.35, cost 0.2, foot traffic 0.15, cleanliness 0.15, crime 0.15
+          // weights: base (speed 0.35, cost 0.2, foot 0.15, cleanliness 0.15, crime 0.15)
           const crimeComp = (r.crimeScore != null && !isNaN(Number(r.crimeScore))) ? Number(r.crimeScore) : 0.5;
-          const yourScore = Math.max(0, Math.min(1, (speedScore * 0.35) + (costScore * 0.2) + (foot * 0.15) + (clean * 0.15) + (crimeComp * 0.15)));
+          const lightingWeightRaw = parseFloat(process.env.LIGHTING_WEIGHT || '0.1');
+          const lightingWeight = (!isNaN(lightingWeightRaw) ? Math.max(0, Math.min(0.5, lightingWeightRaw)) : 0.1);
+          const scale = Math.max(0, 1 - lightingWeight);
+          const yourScore = Math.max(0, Math.min(1,
+            (speedScore * (0.35 * scale)) + (costScore * (0.2 * scale)) + (foot * (0.15 * scale)) + (clean * (0.15 * scale)) + (crimeComp * (0.15 * scale)) + ((r.lightingScore != null ? Number(r.lightingScore) : 0.5) * lightingWeight)
+          ));
           r.yourScore = Math.round(yourScore * 1000) / 1000;
-          r.yourScoreComponents = { speedScore: Math.round(speedScore*1000)/1000, costScore: Math.round(costScore*1000)/1000, footTrafficScore: Math.round(foot*1000)/1000, cleanlinessScore: Math.round(clean*1000)/1000, crimeScore: Math.round(crimeComp*1000)/1000 };
+          r.yourScoreComponents = {
+            speedScore: Math.round(speedScore*1000)/1000,
+            costScore: Math.round(costScore*1000)/1000,
+            footTrafficScore: Math.round(foot*1000)/1000,
+            cleanlinessScore: Math.round(clean*1000)/1000,
+            crimeScore: Math.round(crimeComp*1000)/1000,
+            lightingScore: Math.round((r.lightingScore != null ? Number(r.lightingScore) : 0.5)*1000)/1000
+          };
         } catch (e) {
           r.yourScore = null;
         }
@@ -259,6 +271,35 @@ exports.busDirections = async (req, res) => {
         return [];
       }
 
+      async function loadLightsLocal() {
+        try {
+          const fs = require('fs'); const path = require('path');
+          const candidates = [
+            path.join(__dirname, '..', '..', 'lights.geojson'),
+            path.join(__dirname, '..', '..', 'data', 'lights.geojson'),
+          ];
+          let geoPath = null;
+          for (const c of candidates) { if (fs.existsSync(c)) { geoPath = c; break; } }
+          if (!geoPath) return [];
+          const raw = fs.readFileSync(geoPath, 'utf8');
+          const j = JSON.parse(raw);
+          const out = [];
+          if (j && Array.isArray(j.features)) {
+            for (const f of j.features) {
+              try {
+                const coords = (f.geometry && f.geometry.coordinates) || (f.properties && f.properties.coordinates);
+                if (coords && Array.isArray(coords)) {
+                  // GeoJSON coordinate order: [lon, lat]
+                  const lon = Number(coords[0]); const lat = Number(coords[1]);
+                  if (!isNaN(lat) && !isNaN(lon)) out.push({ lat, lon });
+                }
+              } catch (e) {}
+            }
+          }
+          return out;
+        } catch (e) { return []; }
+      }
+
       const pts = await loadCrimePointsLocal();
       function ptDist(lat1, lon1, lat2, lon2) {
         const toRad = (v) => (v * Math.PI) / 180;
@@ -312,12 +353,41 @@ exports.busDirections = async (req, res) => {
           itin.crimeTotal = Math.round(crimeSum2);
           itin.crimePerMile = Math.round(crimePerMile2 * 1000) / 1000;
           itin.crimeScore = crimeScore2;
+          try {
+            const lights = await loadLightsLocal();
+            let lampCount = 0;
+            for (const L of lights) {
+              for (const m of mids2) {
+                const d = ptDist(L.lat, L.lon, m.lat, m.lon);
+                if (d <= BUF) { lampCount += 1; break; }
+              }
+            }
+            itin.lampCount = lampCount;
+            const lpp = (lampCount * 0.25) / denomMiles2; // lamps per quarter mile
+            itin.lampsPerQuarter = Math.round(lpp * 1000) / 1000;
+          } catch (e) {
+            itin.lampCount = null; itin.lampsPerQuarter = null;
+          }
         } catch (e) {
           itin.crimeTotal = 0; itin.crimePerMile = 0; itin.crimeScore = 1;
         }
       }
     } catch (e) {
       console.warn('failed to compute crime for bus itineraries', e);
+    }
+
+    // Normalize lighting (lampsPerQuarter) into lightingScore (0..1).
+    // Scale so that 0 lamps/qtr-mile -> 0 and 30 lamps/qtr-mile -> 1 (linear), clamp to [0,1].
+    try {
+      const TARGET_LAMPS_PER_QUARTER = 30; // 30 lamps per 0.25 mile maps to lightingScore = 1
+      for (const it of itineraries) {
+        try {
+          const raw = it.lampsPerQuarter != null ? Number(it.lampsPerQuarter) : 0;
+          it.lightingScore = Math.max(0, Math.min(1, raw / TARGET_LAMPS_PER_QUARTER));
+        } catch (e) { it.lightingScore = 0; }
+      }
+    } catch (e) {
+      console.warn('failed to normalize lighting for bus itineraries', e);
     }
 
     // Recompute combined yourScore to include crime now that crime fields exist
@@ -362,10 +432,15 @@ exports.busDirections = async (req, res) => {
           const foot = (r.pedestrianPerQuarterMile != null && !isNaN(Number(r.pedestrianPerQuarterMile))) ? r.footTrafficScore || 0.5 : (r.footTrafficScore != null ? Number(r.footTrafficScore) : 0.5);
           const clean = (r.safetyScore != null && !isNaN(Number(r.safetyScore))) ? Number(r.safetyScore) : 0.5;
           const crimeComp = (r.crimeScore != null && !isNaN(Number(r.crimeScore))) ? Number(r.crimeScore) : 0.5;
+          const lightingWeightRaw = parseFloat(process.env.LIGHTING_WEIGHT || '0.1');
+          const lightingWeight = (!isNaN(lightingWeightRaw) ? Math.max(0, Math.min(0.5, lightingWeightRaw)) : 0.1);
+          const scale = Math.max(0, 1 - lightingWeight);
 
-          const yourScore = Math.max(0, Math.min(1, (speedScore * 0.35) + (costScore * 0.2) + (foot * 0.15) + (clean * 0.15) + (crimeComp * 0.15)));
+          const yourScore = Math.max(0, Math.min(1,
+            (speedScore * (0.35 * scale)) + (costScore * (0.2 * scale)) + (foot * (0.15 * scale)) + (clean * (0.15 * scale)) + (crimeComp * (0.15 * scale)) + ((r.lightingScore != null ? Number(r.lightingScore) : 0.5) * lightingWeight)
+          ));
           r.yourScore = Math.round(yourScore * 1000) / 1000;
-          r.yourScoreComponents = { speedScore: Math.round(speedScore*1000)/1000, costScore: Math.round(costScore*1000)/1000, footTrafficScore: Math.round((foot||0)*1000)/1000, cleanlinessScore: Math.round((clean||0)*1000)/1000, crimeScore: Math.round(crimeComp*1000)/1000 };
+          r.yourScoreComponents = { speedScore: Math.round(speedScore*1000)/1000, costScore: Math.round(costScore*1000)/1000, footTrafficScore: Math.round((foot||0)*1000)/1000, cleanlinessScore: Math.round((clean||0)*1000)/1000, crimeScore: Math.round(crimeComp*1000)/1000, lightingScore: Math.round((r.lightingScore != null ? Number(r.lightingScore) : 0.5)*1000)/1000 };
         } catch (e) {
           r.yourScore = null;
         }
@@ -1267,6 +1342,34 @@ exports.directions = async (req, res) => {
                   return [];
                 }
 
+                async function loadLightsLocal() {
+                  try {
+                    const fs = require('fs'); const path = require('path');
+                    const candidates = [
+                      path.join(__dirname, '..', '..', 'lights.geojson'),
+                      path.join(__dirname, '..', '..', 'data', 'lights.geojson'),
+                    ];
+                    let geoPath = null;
+                    for (const c of candidates) { if (fs.existsSync(c)) { geoPath = c; break; } }
+                    if (!geoPath) return [];
+                    const raw = fs.readFileSync(geoPath, 'utf8');
+                    const j = JSON.parse(raw);
+                    const out = [];
+                    if (j && Array.isArray(j.features)) {
+                      for (const f of j.features) {
+                        try {
+                          const coords = (f.geometry && f.geometry.coordinates) || (f.properties && f.properties.coordinates);
+                          if (coords && Array.isArray(coords)) {
+                            const lon = Number(coords[0]); const lat = Number(coords[1]);
+                            if (!isNaN(lat) && !isNaN(lon)) out.push({ lat, lon });
+                          }
+                        } catch (e) {}
+                      }
+                    }
+                    return out;
+                  } catch (e) { return []; }
+                }
+
                 function ptDist(lat1, lon1, lat2, lon2) {
                   const toRad = (v) => (v * Math.PI) / 180;
                   const R = 6371;
@@ -1301,13 +1404,24 @@ exports.directions = async (req, res) => {
                 const crimePerMile2 = crimeSum2 / denomMiles2;
                 let crimeScore2 = null;
                 if (miles2 > 0) {
-                  const k = 5;
-                  const transformed = Math.log(1 + crimePerMile2);
-                  crimeScore2 = Math.round((1 / (1 + (transformed / k))) * 1000) / 1000;
+                  crimeScore2 = Math.min(20000, crimePerMile2) / 20000;
                 }
                 route.crimeTotal = Math.round(crimeSum2);
                 route.crimePerMile = Math.round(crimePerMile2 * 1000) / 1000;
                 route.crimeScore = crimeScore2;
+                try {
+                  const lights = await loadLightsLocal();
+                  let lampCount = 0;
+                  for (const L of lights) {
+                    for (const m of mids2) {
+                      const d = ptDist(L.lat, L.lon, m.lat, m.lon);
+                      if (d <= BUF) { lampCount += 1; break; }
+                    }
+                  }
+                  route.lampCount = lampCount;
+                  const lpp = (lampCount * 0.25) / denomMiles2;
+                  route.lampsPerQuarter = Math.round(lpp * 1000) / 1000;
+                } catch (e) { route.lampCount = null; route.lampsPerQuarter = null; }
               } catch (e) {
                 route.crimeTotal = null; route.crimePerMile = null; route.crimeScore = null;
               }
@@ -1322,6 +1436,21 @@ exports.directions = async (req, res) => {
       }
     } catch (e) {
       console.warn('Error computing route safety', e);
+    }
+
+    // Normalize lighting (lampsPerQuarter) into lightingScore (0..1) for driving/walking routes.
+    // Use a fixed scale: 0 -> 0, 30 lamps per quarter-mile -> 1 (linear), clamp to [0,1].
+    try {
+      const TARGET_LAMPS_PER_QUARTER = 30;
+      const arr = results || [];
+      for (const r of arr) {
+        try {
+          const raw = r.lampsPerQuarter != null ? Number(r.lampsPerQuarter) : 0;
+          r.lightingScore = Math.max(0, Math.min(1, raw / TARGET_LAMPS_PER_QUARTER));
+        } catch (e) { r.lightingScore = 0; }
+      }
+    } catch (e) {
+      console.warn('failed to normalize lighting for directions', e);
     }
 
     // Compute combined `yourScore` for all returned routes (driving/walking) based on speed, cost, foot traffic, cleanliness
@@ -1365,9 +1494,14 @@ exports.directions = async (req, res) => {
           const foot = (r.footTrafficScore != null && !isNaN(Number(r.footTrafficScore))) ? Number(r.footTrafficScore) : 0.5;
           const clean = (r.safetyScore != null && !isNaN(Number(r.safetyScore))) ? Number(r.safetyScore) : 0.5;
 
-          const yourScore = Math.max(0, Math.min(1, (speedScore * 0.4) + (costScore * 0.2) + (foot * 0.2) + (clean * 0.2)));
+          const lightingWeightRaw = parseFloat(process.env.LIGHTING_WEIGHT || '0.1');
+          const lightingWeight = (!isNaN(lightingWeightRaw) ? Math.max(0, Math.min(0.5, lightingWeightRaw)) : 0.1);
+          const scale = Math.max(0, 1 - lightingWeight);
+          const yourScore = Math.max(0, Math.min(1,
+            (speedScore * (0.4 * scale)) + (costScore * (0.2 * scale)) + (foot * (0.2 * scale)) + (clean * (0.2 * scale)) + ((r.lightingScore != null ? Number(r.lightingScore) : 0.5) * lightingWeight)
+          ));
           r.yourScore = Math.round(yourScore * 1000) / 1000;
-          r.yourScoreComponents = { speedScore: Math.round(speedScore*1000)/1000, costScore: Math.round(costScore*1000)/1000, footTrafficScore: Math.round(foot*1000)/1000, cleanlinessScore: Math.round(clean*1000)/1000 };
+          r.yourScoreComponents = { speedScore: Math.round(speedScore*1000)/1000, costScore: Math.round(costScore*1000)/1000, footTrafficScore: Math.round(foot*1000)/1000, cleanlinessScore: Math.round(clean*1000)/1000, lightingScore: Math.round((r.lightingScore != null ? Number(r.lightingScore) : 0.5)*1000)/1000 };
         } catch (e) {
           r.yourScore = null;
         }
