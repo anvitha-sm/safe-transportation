@@ -742,33 +742,24 @@ export default function RouteScreen() {
                     )}
                     {item.profile === 'driving' && (
                       <View style={{ marginTop: 6 }}>
-                        {item.avgStreetScore != null && (
-                          <Text style={{ color: colors.textMuted, marginTop: 4 }}>Avg street score: {Number(item.avgStreetScore).toFixed(2)} (1=best, 3=worst)</Text>
-                        )}
-                        <Text style={{ color: colors.textMuted, marginTop: 4 }}>
-                          Foot traffic score: {footTrafficScoreDisplay}
-                          {hasFootTrafficMiles ? (` • Pedestrians: ${item.pedestrianTotal != null ? item.pedestrianTotal : '—'} • /qmi: ${item.pedestrianPerQuarterMile != null ? Number(item.pedestrianPerQuarterMile).toFixed(3) : '—'}`) : ''}
-                        </Text>
-                        <Text style={{ color: colors.textMuted, marginTop: 4 }}>Cleanliness: {safetyDisplay} {item.safetyDescription ? '• ' + item.safetyDescription : ''}</Text>
-                        <Text style={{ color: colors.textMuted, marginTop: 4 }}>Crime: {item.crimeTotal != null ? item.crimeTotal : '—'} • score: {item.crimeScore != null ? Number(item.crimeScore).toFixed(3) : '—'}</Text>
-                        <Text style={{ color: colors.textMuted, marginTop: 4 }}>Lighting: {item.lampCount != null ? item.lampCount : '—'} • /qmi: {item.lampsPerQuarter != null ? Number(item.lampsPerQuarter).toFixed(3) : '—'}</Text>
+                        <Text style={{ color: colors.textMuted, marginTop: 4 }}>Foot traffic: {footTrafficScoreVal != null ? Number(footTrafficScoreVal).toFixed(3) : '—'}</Text>
+                        <Text style={{ color: colors.textMuted, marginTop: 4 }}>Cleanliness: {baseSafetyVal != null ? Number(baseSafetyVal).toFixed(3) : '—'}</Text>
+                        <Text style={{ color: colors.textMuted, marginTop: 4 }}>Crime: {item.crimeScore != null ? Number(item.crimeScore).toFixed(3) : '—'}</Text>
+                        <Text style={{ color: colors.textMuted, marginTop: 4 }}>Lighting: {item.lightingScore != null ? Number(item.lightingScore).toFixed(3) : '—'}</Text>
                         {yourScore != null && (
-                          <Text style={{ color: colors.textMuted, marginTop: 4 }}>Your Score: {Number(yourScore).toFixed(3)}</Text>
+                          <Text style={{ color: colors.textMuted, marginTop: 4, fontWeight: '800' }}>Your Score: {Number(yourScore).toFixed(3)}</Text>
                         )}
                       </View>
                     )}
 
                     {item.profile === 'bus' && (
                       <View style={{ marginTop: 6 }}>
-                        <Text style={{ color: colors.textMuted, marginTop: 4 }}>
-                          Foot traffic score: {footTrafficScoreDisplay}
-                          {hasFootTrafficMiles ? (` • Pedestrians: ${item.pedestrianTotal != null ? item.pedestrianTotal : '—'} • /qmi: ${item.pedestrianPerQuarterMile != null ? Number(item.pedestrianPerQuarterMile).toFixed(3) : '—'}`) : ''}
-                        </Text>
-                        <Text style={{ color: colors.textMuted, marginTop: 4 }}>Cleanliness: {safetyDisplay} {item.safetyDescription ? '• ' + item.safetyDescription : ''}</Text>
-                          <Text style={{ color: colors.textMuted, marginTop: 4 }}>Crime: {item.crimeTotal != null ? item.crimeTotal : '—'} • score: {item.crimeScore != null ? Number(item.crimeScore).toFixed(3) : '—'}</Text>
-                          <Text style={{ color: colors.textMuted, marginTop: 4 }}>Lighting: {item.lampCount != null ? item.lampCount : '—'} • /qmi: {item.lampsPerQuarter != null ? Number(item.lampsPerQuarter).toFixed(3) : '—'}</Text>
+                        <Text style={{ color: colors.textMuted, marginTop: 4 }}>Foot traffic: {footTrafficScoreVal != null ? Number(footTrafficScoreVal).toFixed(3) : '—'}</Text>
+                        <Text style={{ color: colors.textMuted, marginTop: 4 }}>Cleanliness: {baseSafetyVal != null ? Number(baseSafetyVal).toFixed(3) : '—'}</Text>
+                        <Text style={{ color: colors.textMuted, marginTop: 4 }}>Crime: {item.crimeScore != null ? Number(item.crimeScore).toFixed(3) : '—'}</Text>
+                        <Text style={{ color: colors.textMuted, marginTop: 4 }}>Lighting: {item.lightingScore != null ? Number(item.lightingScore).toFixed(3) : '—'}</Text>
                         {yourScore != null && (
-                          <Text style={{ color: colors.textMuted, marginTop: 4 }}>Your Score: {Number(yourScore).toFixed(3)}</Text>
+                          <Text style={{ color: colors.textMuted, marginTop: 4, fontWeight: '800' }}>Your Score: {Number(yourScore).toFixed(3)}</Text>
                         )}
                       </View>
                     )}
@@ -776,14 +767,11 @@ export default function RouteScreen() {
                     {item.profile === 'rideshare' && (
                       <View style={{ marginTop: 6 }}>
                         <Text style={{ color: colors.textMuted, fontWeight: '700' }}>Rideshare: {item.rideshareEstimate != null ? (typeof item.rideshareEstimate === 'string' ? item.rideshareEstimate : ('$' + Number(item.rideshareEstimate).toFixed(2))) : '—'}</Text>
-                        <Text style={{ color: colors.textMuted, marginTop: 4 }}>
-                          Foot traffic score: {footTrafficScoreDisplay}
-                          {hasFootTrafficMiles ? (` • Pedestrians: ${item.pedestrianTotal != null ? item.pedestrianTotal : '—'} • /qmi: ${item.pedestrianPerQuarterMile != null ? Number(item.pedestrianPerQuarterMile).toFixed(3) : '—'}`) : ''}
-                        </Text>
-                        <Text style={{ color: colors.textMuted, marginTop: 4 }}>Cleanliness: {safetyDisplay} {item.safetyDescription ? '• ' + item.safetyDescription : ''}</Text>
-                          <Text style={{ color: colors.textMuted, marginTop: 4 }}>Crime: {item.crimeTotal != null ? item.crimeTotal : '—'} • score: {item.crimeScore != null ? Number(item.crimeScore).toFixed(3) : '—'}</Text>
-                        <Text style={{ color: colors.textMuted, marginTop: 4 }}>Lighting: {item.lampCount != null ? item.lampCount : '—'} • /qmi: {item.lampsPerQuarter != null ? Number(item.lampsPerQuarter).toFixed(3) : '—'}</Text>
-                        <Text style={{ color: colors.textMuted, marginTop: 4 }}>Your Score: {rideshareYourScore != null ? Number(rideshareYourScore).toFixed(3) : '—'}</Text>
+                        <Text style={{ color: colors.textMuted, marginTop: 4 }}>Foot traffic: {footTrafficScoreVal != null ? Number(footTrafficScoreVal).toFixed(3) : '—'}</Text>
+                        <Text style={{ color: colors.textMuted, marginTop: 4 }}>Cleanliness: {baseSafetyVal != null ? Number(baseSafetyVal).toFixed(3) : '—'}</Text>
+                        <Text style={{ color: colors.textMuted, marginTop: 4 }}>Crime: {item.crimeScore != null ? Number(item.crimeScore).toFixed(3) : '—'}</Text>
+                        <Text style={{ color: colors.textMuted, marginTop: 4 }}>Lighting: {item.lightingScore != null ? Number(item.lightingScore).toFixed(3) : '—'}</Text>
+                        <Text style={{ color: colors.textMuted, marginTop: 4, fontWeight: '800' }}>Your Score: {rideshareYourScore != null ? Number(rideshareYourScore).toFixed(3) : '—'}</Text>
                       </View>
                     )}
                   </TouchableOpacity>
