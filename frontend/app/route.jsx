@@ -191,6 +191,7 @@ export default function RouteScreen() {
   const [userSpeedPref, setUserSpeedPref] = useState(10);
   const [userCostPref, setUserCostPref] = useState(10);
   const [userCrimePref, setUserCrimePref] = useState(10);
+  const [userLightingPref, setUserLightingPref] = useState(10);
   const [fromText, setFromText] = useState('');
   const [toText, setToText] = useState('');
   const [fromCoords, setFromCoords] = useState(null);
@@ -227,6 +228,8 @@ export default function RouteScreen() {
       if (costPref != null) setUserCostPref(Number(costPref));
       const crimePref = parsed?.preferences?.crime ?? parsed?.crime ?? null;
       if (crimePref != null) setUserCrimePref(Number(crimePref));
+      const lightingPref = parsed?.preferences?.lighting ?? parsed?.lighting ?? null;
+      if (lightingPref != null) setUserLightingPref(Number(lightingPref));
     } catch (_e) { }
   })(); }, []);
 
@@ -443,42 +446,67 @@ export default function RouteScreen() {
     // cost score
     let costScore = null;
     try {
-      if (route.profile === 'bus') costScore = 1;
-      else if (route.profile === 'driving' || route.profile === 'rideshare') {
-        const miles = (Number(route.distance || 0) / 1609.344) || 0;
-        const cost = 0.6 * miles;
-        const costNorm = Math.max(0, Math.min(cost, 50)) / 50;
-        costScore = 1 - costNorm;
+      if (route.profile === 'bus') {
+        costScore = 1;
+      } else if (route.profile === 'rideshare') {
+        // prefer explicit rideshare estimate when available (e.g. "$12.34")
+        let estimate = null;
+        if (route.rideshareEstimate != null) {
+          if (typeof route.rideshareEstimate === 'number') estimate = route.rideshareEstimate;
+          else {
+            const m = String(route.rideshareEstimate).match(/[\d,.]+/);
+            if (m && m[0]) estimate = parseFloat(m[0].replace(/,/g, ''));
+          }
+        }
+        if (estimate != null && !Number.isNaN(estimate)) {
+          const costNorm = Math.max(0, Math.min(estimate, 50)) / 50;
+          costScore = 1 - costNorm;
+        } else {
+          // fallback to distance-based estimate
+          const miles = (Number(route.distance || 0) / 1609.344) || 0;
+          const cost = 0.6 * miles;
+          const costNorm = Math.max(0, Math.min(cost, 50)) / 50;
+          costScore = 1 - costNorm;
+        }
+      } else if (route.profile === 'driving') {
+        // treat personal driving as no direct monetary cost for the user-facing comparison
+        costScore = 1;
       }
     } catch (e) { costScore = null; }
 
-    // combine per user prefs
-    const safetyW_final = Math.max(0, Math.min(Number(userSafetyPref || 10), 20)) / 20;
-    const speedW_final = Math.max(0, Math.min(Number(userSpeedPref || 10), 20)) / 20;
-    const costW_final = Math.max(0, Math.min(Number(userCostPref || 10), 20)) / 20;
-    const crimeW_final = Math.max(0, Math.min(Number(userCrimePref || 10), 20)) / 20;
-    let finalScore = null;
-    // Include crimeScore and lighting when present as additional dimensions (higher is better)
+    // combine per user prefs using the six explicit preferences from the user profile:
+    // cleanliness (userSafetyPref), footTraffic (userFootPref), speed, cost, crime, lighting
+    const prefClean = Math.max(0, Math.min(Number(userSafetyPref || 10), 20)) / 20;
+    const prefFoot = Math.max(0, Math.min(Number(userFootPref || 10), 20)) / 20;
+    const prefSpeed = Math.max(0, Math.min(Number(userSpeedPref || 10), 20)) / 20;
+    const prefCost = Math.max(0, Math.min(Number(userCostPref || 10), 20)) / 20;
+    const prefCrime = Math.max(0, Math.min(Number(userCrimePref || 10), 20)) / 20;
+    const prefLighting = Math.max(0, Math.min(Number(userLightingPref || 10), 20)) / 20;
+
+    const compVals = [];
+    const compW = [];
+
+    // include cleanliness and foot traffic separately (combinedSafetyVal kept for display)
+    if (baseSafetyVal != null) { compVals.push(baseSafetyVal); compW.push(prefClean); }
+    if (footTrafficScoreVal != null) { compVals.push(footTrafficScoreVal); compW.push(prefFoot); }
+    if (speedScore != null) { compVals.push(speedScore); compW.push(prefSpeed); }
+    if (costScore != null) { compVals.push(costScore); compW.push(prefCost); }
     const crimeScoreVal = route.crimeScore != null ? Number(route.crimeScore) : null;
+    if (crimeScoreVal != null) { compVals.push(crimeScoreVal); compW.push(prefCrime); }
     const lightingScoreVal = route.lightingScore != null ? Number(route.lightingScore) : null;
-    // Build arrays for available scores and weights to compute weighted average robustly
-    const components = [];
-    const weights = [];
-    if (combinedSafetyVal != null) { components.push(combinedSafetyVal); weights.push(safetyW_final); }
-    if (speedScore != null) { components.push(speedScore); weights.push(speedW_final); }
-    if (costScore != null) { components.push(costScore); weights.push(costW_final); }
-    if (crimeScoreVal != null) { components.push(crimeScoreVal); weights.push(crimeW_final); }
-    // lighting has a small default weight (0.1); include when present
-    const lightingW_final = 0.1;
-    if (lightingScoreVal != null) { components.push(lightingScoreVal); weights.push(lightingW_final); }
-    const totalW = weights.reduce((s, v) => s + v, 0);
-    if (components.length > 0 && totalW > 0) {
+    if (lightingScoreVal != null) { compVals.push(lightingScoreVal); compW.push(prefLighting); }
+
+    let finalScore = null;
+    const totalW = compW.reduce((s, v) => s + (isNaN(v) ? 0 : v), 0);
+    if (compVals.length > 0 && totalW > 0) {
       let numer = 0;
-      for (let i = 0; i < components.length; i++) numer += (components[i] * weights[i]);
+      for (let i = 0; i < compVals.length; i++) {
+        const w = isNaN(compW[i]) ? 0 : compW[i];
+        numer += (compVals[i] * w);
+      }
       finalScore = numer / totalW;
-    } else if (components.length > 0) {
-      // fallback: average equally
-      finalScore = components.reduce((s, v) => s + v, 0) / components.length;
+    } else if (compVals.length > 0) {
+      finalScore = compVals.reduce((s, v) => s + v, 0) / compVals.length;
     }
 
     return { yourScoreComputed: finalScore, combinedSafetyVal, speedScore, costScore };
@@ -502,7 +530,7 @@ export default function RouteScreen() {
     const same = sorted.length === routes.length && sorted.every((v, i) => (v.key || v._busKey || (v.profile + i)) === (routes[i].key || routes[i]._busKey || (routes[i].profile + i)));
     console.log('[Route] sort same as current?', same);
     if (!same) setRoutes(sorted);
-  }, [routes, userSafetyPref, userFootPref, userSpeedPref, userCostPref, userCrimePref]);
+  }, [routes, userSafetyPref, userFootPref, userSpeedPref, userCostPref, userCrimePref, userLightingPref]);
 
   // Debug: log crime fields returned by backend so we can verify they're present
   useEffect(() => {
@@ -693,57 +721,8 @@ export default function RouteScreen() {
             // and weight with user cost preference. Display as a decimal 0..1.
             let rideshareYourScore = null;
             if (item.profile === 'rideshare') {
-              const costPref = Math.max(0, Math.min(Number(userCostPref || 10), 20)) / 20; // 0..1 where 1 means cost matters more
-              // Parse rideshare cost which may be a string like "$12.34"
-              let cost = null;
-              if (item.rideshareEstimate != null) {
-                if (typeof item.rideshareEstimate === 'number') cost = item.rideshareEstimate;
-                else {
-                  const m = String(item.rideshareEstimate).match(/[\d,.]+/);
-                  if (m && m[0]) cost = parseFloat(m[0].replace(/,/g, ''));
-                }
-              }
-              const costNorm = cost != null && !Number.isNaN(cost) ? Math.max(0, Math.min(cost, 50)) / 50 : 1;
-              const costScore = 1 - costNorm; // 0..1 where higher is better
-
-              // cleanliness (safety) and foot traffic scores (0..1) — use values already computed for this item
-              const cleanlinessScore = baseSafetyVal != null ? baseSafetyVal : null;
-              const footScore = footTrafficScoreVal != null ? footTrafficScoreVal : null;
-              // Weigh cleanliness vs footTraffic using user prefs
-              const safetyW = Math.max(0, Math.min(Number(userSafetyPref || 10), 20)) / 20;
-              const footW = Math.max(0, Math.min(Number(userFootPref || 10), 20)) / 20;
-
-              let safetyCombined = null;
-              if (cleanlinessScore != null || footScore != null) {
-                if (cleanlinessScore == null) safetyCombined = footScore;
-                else if (footScore == null) safetyCombined = cleanlinessScore;
-                else {
-                  const denom = (safetyW + footW) || 1;
-                  safetyCombined = (cleanlinessScore * safetyW + footScore * footW) / denom;
-                }
-              }
-
-              // incorporate speed into the rideshare score as well
-              const otherDenom = (safetyW + speedW) || 1;
-              let otherCombined = null;
-              if (safetyCombined != null && speedScore != null) otherCombined = ((safetyCombined * safetyW) + (speedScore * speedW)) / otherDenom;
-              else if (safetyCombined != null) otherCombined = safetyCombined;
-              else if (speedScore != null) otherCombined = speedScore;
-
-              // incorporate lighting into rideshare score with a small default weight
-              const lightingScoreItem = item.lightingScore != null ? Number(item.lightingScore) : null;
-              const lightingW = 0.1;
-              let otherWithLighting = otherCombined;
-              if (lightingScoreItem != null) {
-                if (otherCombined != null) otherWithLighting = ((1 - lightingW) * otherCombined) + (lightingW * lightingScoreItem);
-                else otherWithLighting = lightingScoreItem;
-              }
-
-              if (otherWithLighting != null) {
-                rideshareYourScore = (costPref * costScore) + ((1 - costPref) * otherWithLighting);
-              } else {
-                rideshareYourScore = costScore;
-              }
+              // Use the canonical computed score (which already uses the user's six preferences)
+              rideshareYourScore = yourScore;
             }
             return (
               <View style={[styles.routeCard, isSelected && styles.routeCardSelected]}>
