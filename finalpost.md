@@ -39,24 +39,20 @@ The goal of our interviews was Our team interviewed 32 users, primarily women an
 
 We asked users the following questions.
 
-What modes of transportation do you use either in your daily life or on special occasions, and how often do you use each of these modes?
-What would need to change for you to change your mode of transportation?
-If they do not take public transportation: What would have to change for you to take public transportation regularly? Is there anything that would convince you to do so? 
-
-How often do you travel alone? With other people? Does how you prepare or feel safe change based on who you’re traveling with?
-
-Have you ever felt unsafe when traveling? What was that experience like, and why did you feel unsafe?
-In general, what kinds of situations make you feel unsafe when traveling? What do you do in real-time to feel more safe in these situations?
-Have you ever changed your route or strayed away from a routing app because of safety concerns?
-
-How likely are you to use the following potential features if they were in your app? Would it make a big difference if they were in your current maps app versus another app?
+*What modes of transportation do you use either in your daily life or on special occasions, and how often do you use each of these modes?*
+*What would need to change for you to change your mode of transportation?*
+*If they do not take public transportation: What would have to change for you to take public transportation regularly? Is there anything that would convince you to do so?*
+*How often do you travel alone? With other people? Does how you prepare or feel safe change based on who you’re traveling with?*
+*Have you ever felt unsafe when traveling? What was that experience like, and why did you feel unsafe?*
+*In general, what kinds of situations make you feel unsafe when traveling? What do you do in real-time to feel more safe in these situations?*
+*Have you ever changed your route or strayed away from a routing app because of safety concerns?*
+*How likely are you to use the following potential features if they were in your app? Would it make a big difference if they were in your current maps app versus another app?
 Safe route suggestions based on lighting, criminal activity, etc.?
 Live monitoring system (video + audio)?
 Community reporting and alerts?
 Location sharing and emergency contacts?
-
 Imagine you were walking alone at night, taking the same route you usually do, but you start to feel unsafe. There are people in the area who look suspicious to you. What would you do?
-Do you think your gender, race, etc. influence this reaction? Would your reaction change if your identity was something else?
+Do you think your gender, race, etc. influence this reaction? Would your reaction change if your identity was something else?*
 
 ### Summary
 
@@ -66,15 +62,15 @@ Users seek not only speed, but also safety travel criteria when traveling, which
 
 In our semi-structured interviews, we uncovered from user anecdotes that there are a wide variety of aspects that make users feel unsafe: lighting, crime, cleanliness, foot traffic, sidewalk breaks, suspicious people, etc. We asked interviewees what they prioritize most: safety, speed, or cost. Almost all users said safety is the most important factor when traveling. However, none of the users, across the survey and interviews, reported ever using a safe transportation app, but instead, traditional navigation apps that focus on efficiency and speed. Thus, there’s a clear gap between user needs and the technology that actually exists and is frequently used: our project can aim to bridge this gap.
 
-Different users find different travel criteria unsafe to different extents.
+*1) Different users find different travel criteria unsafe to different extents*
 
 Although almost all users rated safety as the most important factor, that doesn’t explain the sub-criterias of safety. Our interviews with users highlighted different unique anecdotes. Some users were afraid of traveling alone at night, some were afraid of being in an uncrowded place, some were afraid of being attacked and not being able to defend themselves, some were afraid of waiting at bus stops, etc. We tried grouping these many anecdotes into seven general situations for our survey to gauge more user perceptions.
 
 Looking at the User Perceptions of Unsafe Situations plot from our survey, we can see that every of the seven “unsafe” situations are ranked every position from 1 through 7 by at least one of our 25 respondents. Specifically, there seems to be a near equal spread for each situation across the seven potential ratings.  Thus, it would be unfair of us to simply rank how safe routes are without taking into account how the specific user even defines safety.
 
-Gender and race influence user reactions to potential threats to safety
+*2) Gender and race influence user reactions to potential threats to safety*
 
-	Almost every interviewee agreed that not being a man or being a person of color makes them feel more unsafe in the same situations as those who are not marginalized. Many users reported that if they were a man or White, they would not bat an eye at situations like traveling at night or in uncrowded places because they wouldn’t feel threatened by a potential attack. This furthers the need for a project that not only focuses on safe transportation, but specifically for women and people of color because these are the populations who feel higher levels of unsafety when traveling.
+Almost every interviewee agreed that not being a man or being a person of color makes them feel more unsafe in the same situations as those who are not marginalized. Many users reported that if they were a man or White, they would not bat an eye at situations like traveling at night or in uncrowded places because they wouldn’t feel threatened by a potential attack. This furthers the need for a project that not only focuses on safe transportation, but specifically for women and people of color because these are the populations who feel higher levels of unsafety when traveling.
 
 Based on this user research, we designed our problem statement and our design goals to match what our users would find useful to alleviate their transportation concern.
 
@@ -97,8 +93,8 @@ Given our in-depth user research, we defined personas and a process map to bette
 Our user research mainly developed two critical personas, even within our narrowed audience of young women and people of color: those who frequently use public transportation and those who don’t. Users who frequently use public transportation seemed to not be as afraid of the different travel criteria as users who do not frequently use public transportation. Users who do not frequently use public transportation seemed concerned about the safety of public transportation and about traveling alone in particular. All users, however, had similar reactions to potential threats: location sharing, calling someone, avoiding confrontation, etc.
 
 Thus, we derive two personas.
-Bianca, a 19 year old UCLA residential student who typically uses rideshare when exploring LA, but occasional uses public transit with her friends
-Maithili, a 21 year old UCLA student in the apartments who frequently uses public transportation to get to work and travel around LA alone and with friends
+1) Bianca, a 19 year old UCLA residential student who typically uses rideshare when exploring LA, but occasional uses public transit with her friends
+2) Maithili, a 21 year old UCLA student in the apartments who frequently uses public transportation to get to work and travel around LA alone and with friends
 
 However, even within personas, there is still much variability in the user preferences for travel criteria, as per finding #1 of the user research.
 
@@ -118,11 +114,12 @@ We used MongoDB as our database because it’s flexible to handle our two differ
 
 When a user wants to navigate, they start typing the start and end locations. Suggested locations based on what is already typed show up underneath through calls to Mapbox’s Geocode API. After the user successfully selects a start and end location, multiple steps occur:
 
-Up to 2 driving routes are generated via Mapbox Routes API
-A rideshare route is generated with the same route as the fastest driving route, and its price is estimated.
-Up to 2 bus routes are generated via Transitland Routes API
-For each route, foot traffic, lighting, crime, and cleanliness are all scored from 0-1 either by using direct values from the dataset (foot traffic and cleanliness) or calculating a per quarter mile metric (lighting and crime).
-The scores in part 4, as well as normalized speed and cost from 0-1, are weighted by user preferences to get the user-personalized score for that route
+1) Up to 2 driving routes are generated via Mapbox Routes API
+2) A rideshare route is generated with the same route as the fastest driving route, and its price is estimated.
+3) Up to 2 bus routes are generated via Transitland Routes API
+4) For each route, foot traffic, lighting, crime, and cleanliness are all scored from 0-1 either by using direct values from the dataset (foot traffic and cleanliness) or calculating a per quarter mile metric (lighting and crime).
+5) The scores in part 4, as well as normalized speed and cost from 0-1, are weighted by user preferences to get the user-personalized score for that route
+
 This information is passed over to the frontend so it can be displayed and so the route cards are organized by user-personalized score.
 
 The APIs have high free tiers, making them optimal for our system. The datasets are quite large, which causes low latency and some storage issues with MongoDB, so caching could be implemented in the future.
@@ -147,10 +144,8 @@ We performed these 20-minute studies in a think-aloud manner where we consistent
 
 For our analysis approach, we created the metrics + data table below. We aimed for a balance between quantitative measures of how well the user performed at the given task (through the system log) and how they felt performing the given task (through the survey).
 
-Question
-Data Source
-Metric/Question
-1
+
+Question 1
 System Log
 % of users who successfully adjust travel preferences and receive personalized routes
 Time taken to adjust preferences
@@ -159,9 +154,10 @@ Survey
 [Complexity]: "I found the system unnecessarily complex." 
 [Quick to Learn]: "I would imagine that most people would learn to use this system very quickly."
 [Confidence in Use]: "I feel very confident using this system."
-2
+
+Question 2
 System Log
-# of different routes viewed and considered
+Number of different routes viewed and considered
 Time taken to learn information about each route
 Time taken to select a route
 Survey
@@ -173,11 +169,11 @@ Survey
 
 ## Findings
 
-Are users able to translate their personal preferences regarding travel criteria into personalized ranked navigation routes via Atria’s user profile design?
+*Are users able to translate their personal preferences regarding travel criteria into personalized ranked navigation routes via Atria’s user profile design?*
 
-	Yes, although with some confusion. Every user was eventually able to successfully adjust travel preferences and receive personalized routes, but the time it took for users to accomplish this varied widely. Three users followed the sequence of actions by thoroughly looking through user settings first before navigating away. Because of this, they read through the preferences section and understood the goal of the sliders and rankings. Two users did not follow this sequence of actions. Instead, they clicked the ‘Add a Route’ button that appears on the user settings page that navigates to the routing page. Because of that, some users reached the routing page before they personalized their preferences which 1) left them confused when they saw the default rankings for each route because they didn’t know where the numbers came from and 2) left them confused when the next task was to adjust the preferences because they didn’t know where to find it. For that reason, those two users and another two users (who struggled to find the settings page from the route page) said that this system was somewhat complex. Many said that once you fully explore the system it makes complete sense and makes them feel more confident, but starting off, for the first few minutes, it was difficult to pick up which information was stored where. 
+Yes, although with some confusion. Every user was eventually able to successfully adjust travel preferences and receive personalized routes, but the time it took for users to accomplish this varied widely. Three users followed the sequence of actions by thoroughly looking through user settings first before navigating away. Because of this, they read through the preferences section and understood the goal of the sliders and rankings. Two users did not follow this sequence of actions. Instead, they clicked the ‘Add a Route’ button that appears on the user settings page that navigates to the routing page. Because of that, some users reached the routing page before they personalized their preferences which 1) left them confused when they saw the default rankings for each route because they didn’t know where the numbers came from and 2) left them confused when the next task was to adjust the preferences because they didn’t know where to find it. For that reason, those two users and another two users (who struggled to find the settings page from the route page) said that this system was somewhat complex. Many said that once you fully explore the system it makes complete sense and makes them feel more confident, but starting off, for the first few minutes, it was difficult to pick up which information was stored where. 
 
-Do these personalized ranked navigation routes better help users explore their potential transportation options and ultimately decide how to travel to their destination?
+*Do these personalized ranked navigation routes better help users explore their potential transportation options and ultimately decide how to travel to their destination?*
 
 Somewhat. Two users just trusted whatever route was ranked #1 to be the route that they should take without really examining each travel criteria’s score and the detailed maps. These users only viewed 1 or 2 routes and didn’t take more than 2 minutes to finally select their route. The personalized rankings were critical for their selection because they just went based off of the final score, leaving them well-informed and satisfied. Four users, however, were very engaged in dissecting the routes, and two even wished there was more information. They thought details would show more information about bus routes, overlaid maps, direct dataset information, etc. They searched through the detailed maps and checked each travel criteria’s subscore for 2-3 routes, and thus took at least 5 minutes to select a route. These users agreed that the safety information was useful and informed them, but they hoped for even more information.
 
@@ -189,32 +185,33 @@ Our main limitations, as explained above, are the low latency, limited datasets,
 
 Our future work includes resolving the limitations above, but based on our evaluation, we do have further new questions regarding our system that could guide future work.
  
-Is a weighted sum really the best model for the user-personalized score?
+*Is a weighted sum really the best model for the user-personalized score?*
 
 Some users accepted the user-personalized score at face value while others wanted more information on how the score was calculated. Different regression models besides a simple weighted sum could be explored to best align with users. 
 
-How can we help users who struggle to translate their personal preferences into 1-20 ratings or rankings? 
+*How can we help users who struggle to translate their personal preferences into 1-20 ratings or rankings?*
 
-	We could conduct more user research and develop user profiles with specific values for the travel preferences based on our findings. Then, upon each account creation, the user could fill out a survey with what-if scenarios and their personal opinions on which situations feel more unsafe to sort them into one of these user profiles for default preferences that somewhat match their opinions.
+We could conduct more user research and develop user profiles with specific values for the travel preferences based on our findings. Then, upon each account creation, the user could fill out a survey with what-if scenarios and their personal opinions on which situations feel more unsafe to sort them into one of these user profiles for default preferences that somewhat match their opinions.
 
-How can we integrate community alerts into our safety rankings, and would users find this feature useful?
+*How can we integrate community alerts into our safety rankings, and would users find this feature useful?*
 
-	Currently, the community alerts page is for personal use and not integrated into the rankings due to unreliability and bias concerns. However, users expressed wanting more real-time data for route rankings, so we could explore methods for ensuring the validity of the community alerts (such as through NLP techniques) and then integrating them into the ranking if that user prefers including community information.
+Currently, the community alerts page is for personal use and not integrated into the rankings due to unreliability and bias concerns. However, users expressed wanting more real-time data for route rankings, so we could explore methods for ensuring the validity of the community alerts (such as through NLP techniques) and then integrating them into the ranking if that user prefers including community information.
 
 Various mistakes throughout the design and development process lead us to learn key lessons.
 
-There should be a balance between user personalization and system structure.
+*1) There should be a balance between user personalization and system structure*
 
-	We gave users the freedom to personalize preferences, but this caused confusion for users to score their opinions themselves from ratings 1-20 and rankings. We gave them a lot of flexibility at the risk of users: having some default values or trial personas that users can click through to get a sense of how they should do their rankings would give them more structure rather than making them figure it out.
-	We also limited users. When we began developing, we figured that only one persona was necessary. However, during further interviews and usability tests, we realized that there were many diverging characteristics we didn’t account for. Primarily, we developed our system with well-seasoned users in mind, not first-time users (see point 3). Different users are open to different kinds of transportation (for example, many users were strongly against public transportation for lack of further knowledge on it), but our system does not allow for users to choose their modes of transportation or to quickly pick up the system.
+We gave users the freedom to personalize preferences, but this caused confusion for users to score their opinions themselves from ratings 1-20 and rankings. We gave them a lot of flexibility at the risk of users: having some default values or trial personas that users can click through to get a sense of how they should do their rankings would give them more structure rather than making them figure it out.
 
-Deep dive into dependencies (APIs, datasets) before implementation
+We also limited users. When we began developing, we figured that only one persona was necessary. However, during further interviews and usability tests, we realized that there were many diverging characteristics we didn’t account for. Primarily, we developed our system with well-seasoned users in mind, not first-time users (see point 3). Different users are open to different kinds of transportation (for example, many users were strongly against public transportation for lack of further knowledge on it), but our system does not allow for users to choose their modes of transportation or to quickly pick up the system.
 
-	We collected our APIs and datasets prior to implementation but did not fully explore them. As a result, we didn’t recognize that Mapbox does not provide bus routes, Uber and Lyft APIs require weeks to be approved, and our datasets are extremely large. We instead had to scramble for alternatives (Transitland, estimating rideshare cost, and accepting low latency), which directly led to limitations of our system. More thorough exploration of dependencies would have saved us this time and effort.
+*2) Deep dive into dependencies (APIs, datasets) before implementation*
 
-Systems may be simple, but hard to learn without proper documentation/instructions
+We collected our APIs and datasets prior to implementation but did not fully explore them. As a result, we didn’t recognize that Mapbox does not provide bus routes, Uber and Lyft APIs require weeks to be approved, and our datasets are extremely large. We instead had to scramble for alternatives (Transitland, estimating rideshare cost, and accepting low latency), which directly led to limitations of our system. More thorough exploration of dependencies would have saved us this time and effort.
 
-	Although our system does not feature many pages, users had difficulty understanding the sequence of pages, particularly going back and forth between travel preferences and routing because they didn’t know travel preferences was in the settings page or that it should be accessed to change the route scores. Incorporating a tutorial page or having subtitles on different pages explaining what the page is about and where to go would help users better pick up how the system works. After that, it’s easy for the users to actually use the system. In general, having more full sentences in the app explaining what the different subscores mean could also be helpful.
+*3) Systems may be simple, but hard to learn without proper documentation/instructions*
+
+Although our system does not feature many pages, users had difficulty understanding the sequence of pages, particularly going back and forth between travel preferences and routing because they didn’t know travel preferences was in the settings page or that it should be accessed to change the route scores. Incorporating a tutorial page or having subtitles on different pages explaining what the page is about and where to go would help users better pick up how the system works. After that, it’s easy for the users to actually use the system. In general, having more full sentences in the app explaining what the different subscores mean could also be helpful.
 
 
 
