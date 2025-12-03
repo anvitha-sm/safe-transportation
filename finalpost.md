@@ -106,6 +106,8 @@ Currently, when users want to travel somewhere new, they open up multiple apps o
 
 We designed our mobile app Atria to be an all-in-one vehicular safe transportation app. It ranks all possible routes based on each user’s personal safety preferences, including lighting, foot traffic, crime history, and cleanliness. Instead of choosing routes solely by speed, Atria empowers users to customize what matters most to them and receive tailored, safety-forward navigation.
 
+![system](system.png)
+
 ### Data and Tech Stack
 
 Our app features a React.js/Expo (web + native) frontend and a Node.js/Express.js backend, which we selected for mobile and web use. Atria lets you customize your user preferences and search for a start and end location for navigation in the UI. Routes will be generated and then scored by external datasets for safety. Routes will then be sorted based on user preferences towards these safety travel criteria, and users can further delve into certain routes for more information.
